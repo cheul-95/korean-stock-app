@@ -7,7 +7,7 @@ import { Search } from "lucide-react";
 import { StockPrice, AskingPrice, DailyPrice, StockInfo } from "@/types/stock";
 import StockChart from "@/components/StockChart";
 import AskingPriceTable from "@/components/AskingPriceTable";
-
+import Link from "next/link";
 export default function StockDetailPage({ params }: { params: Promise<{ code: string }> }) {
     const resolvedParams = use(params);
     const router = useRouter();
@@ -47,13 +47,14 @@ export default function StockDetailPage({ params }: { params: Promise<{ code: st
                     setLoading(false);
                     setIsSearching(false);
                 }
-            } catch (err: any) {
+            } catch (err) {
                 console.error("종목 검색 실패:", err);
                 setError(
-                    err.response?.data?.error ||
-                        `"${searchTerm}" 종목을 찾을 수 없습니다. 정확한 종목코드 또는 종목명을 입력해주세요.`
+                    axios.isAxiosError(err) && err.response?.data?.error
+                        ? err.response.data.error
+                        : `"${searchTerm}" 종목을 찾을 수 없습니다. 정확한 종목코드 또는 종목명을 입력해주세요.`
                 );
-                setMessage(err.response?.data?.message || null);
+                setMessage(axios.isAxiosError(err) && err.response?.data?.message ? err.response.data.message : null);
                 setLoading(false);
                 setIsSearching(false);
             }
@@ -103,9 +104,13 @@ export default function StockDetailPage({ params }: { params: Promise<{ code: st
             setDailyData(dailyRes.data);
             setInfoData(infoRes.data);
             setError(null);
-        } catch (err: any) {
-            setMessage(err.response?.data?.message || null);
-            setError(err.response?.data?.error || "데이터를 불러오는데 실패했습니다");
+        } catch (err) {
+            setMessage(axios.isAxiosError(err) && err.response?.data?.message ? err.response.data.message : null);
+            setError(
+                axios.isAxiosError(err) && err.response?.data?.error
+                    ? err.response.data.error
+                    : "데이터를 불러오는데 실패했습니다"
+            );
             console.error(err);
         } finally {
             setLoading(false);
@@ -170,7 +175,7 @@ export default function StockDetailPage({ params }: { params: Promise<{ code: st
             <header className="bg-green-600 shadow-lg ">
                 <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 mx-auto">
                     <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-                        <a href="/" className="flex items-center gap-3 w-full md:w-auto">
+                        <Link href="/" className="flex items-center gap-3 w-full md:w-auto">
                             <div className="flex items-center gap-3">
                                 <div className="bg-white/20 backdrop-blur-sm p-3 rounded-xl">
                                     <svg
@@ -192,7 +197,7 @@ export default function StockDetailPage({ params }: { params: Promise<{ code: st
                                     <p className="text-green-100 text-sm mt-0.5">실시간 주식 정보</p>
                                 </div>
                             </div>
-                        </a>
+                        </Link>
                         <form onSubmit={handleQuickSearch} className="w-full md:w-auto md:min-w-[320px]">
                             <h2 className="sr-only">종목 검색</h2>
                             <div className="relative">

@@ -13,9 +13,17 @@ import {
     BarChart,
     Bar,
 } from "recharts";
-
 interface StockChartProps {
     data: DailyPrice;
+}
+
+interface ChartDataItem {
+    date: string;
+    close: number;
+    open: number;
+    high: number;
+    low: number;
+    volume: number;
 }
 
 export default function StockChart({ data }: StockChartProps) {
@@ -31,9 +39,10 @@ export default function StockChart({ data }: StockChartProps) {
             volume: parseInt(item.acml_vol),
         }));
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const CustomTooltip = ({ active, payload }: any) => {
         if (active && payload && payload.length) {
-            const data = payload[0].payload;
+            const data = payload[0].payload as ChartDataItem;
             return (
                 <div className="bg-white p-4 border border-gray-300 rounded shadow-lg">
                     <p className="font-bold mb-2">{data.date}</p>
@@ -99,7 +108,7 @@ export default function StockChart({ data }: StockChartProps) {
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="date" />
                         <YAxis tickFormatter={(value) => (value / 10000).toFixed(0) + "만"} />
-                        <Tooltip formatter={(value: any) => [value.toLocaleString(), "거래량"]} />
+                        <Tooltip formatter={(value: number | string) => [value.toLocaleString(), "거래량"]} />
                         <Bar dataKey="volume" fill="#82ca9d" name="거래량" />
                     </BarChart>
                 </ResponsiveContainer>

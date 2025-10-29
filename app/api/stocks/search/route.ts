@@ -26,12 +26,13 @@ export async function GET(request: NextRequest) {
             },
             { status: 404 }
         );
-    } catch (error: any) {
-        console.error("❌ 검색 실패:", error);
+    } catch (error) {
+        const err = error as Error;
+        console.error(err.message);
 
         return NextResponse.json(
             {
-                error: error.response?.data?.msg1 || error.message || "종목 검색 중 오류가 발생했습니다",
+                error: err.message || "종목 검색 중 오류가 발생했습니다",
             },
             { status: 500 }
         );

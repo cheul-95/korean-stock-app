@@ -28,13 +28,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         }
 
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error) {
         console.error("API 오류:", error);
         return NextResponse.json(
             {
-                error: error.response?.data?.msg1 || error.message || "주식 데이터를 가져오는데 실패했습니다",
+                error: error instanceof Error ? error.message : "주식 데이터를 가져오는데 실패했습니다",
             },
-            { status: error.response?.status || 500 }
+            { status: 500 }
         );
     }
 }

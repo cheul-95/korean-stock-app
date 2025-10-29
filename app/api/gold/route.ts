@@ -26,7 +26,7 @@ export async function GET() {
             const exchangeResponse = await fetch("https://api.exchangerate-api.com/v4/latest/USD");
             const exchangeData = await exchangeResponse.json();
             usdToKrw = exchangeData.rates?.KRW;
-        } catch (exchangeError) {
+        } catch {
             usdToKrw = 1380;
         }
 

@@ -6,8 +6,17 @@ import axios from "axios";
 import { Search } from "lucide-react";
 import { PopularStock, GoldPrice } from "@/types/stock";
 
+interface PopularStockData {
+    name: string;
+    code: string;
+    price: string | null;
+    change?: string;
+    changeRate?: string;
+    priceSign?: string;
+}
+
 export default function HomePage() {
-    const [popularStocks, setPopularStocks] = useState<any[]>([]); // 인기 종목 (고정 8개)
+    const [popularStocks, setPopularStocks] = useState<PopularStockData[]>([]); // 인기 종목 (고정 8개)
     const [volumeStocks, setVolumeStocks] = useState<PopularStock[]>([]); // 거래량 상위 (실시간 10개)
     const [goldPrice, setGoldPrice] = useState<GoldPrice | null>(null);
     const [volumeLoading, setVolumeLoading] = useState(true);
@@ -17,7 +26,7 @@ export default function HomePage() {
     const router = useRouter();
 
     useEffect(() => {
-        fetchPopularStocks();
+        //fetchPopularStocks();
         fetchVolumeStocks();
         fetchGoldPrice();
     }, []);
@@ -152,7 +161,7 @@ export default function HomePage() {
 
             <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
                 {/* 인기 종목 */}
-                <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+                {/* <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
                     <div>
                         <h3 className="text-lg font-semibold mb-3">인기 종목</h3>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -197,7 +206,7 @@ export default function HomePage() {
                             })}
                         </div>
                     </div>
-                </div>
+                </div> */}
 
                 {/* 거래량 상위 종목 */}
                 <div className="bg-white rounded-lg shadow-lg p-6">

@@ -1,4 +1,4 @@
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import fs from "fs";
 import path from "path";
 
@@ -78,8 +78,9 @@ export const getAccessToken = async (): Promise<string> => {
             saveTokenToFile(token, tokenExpiry);
 
             return token;
-        } catch (error: any) {
-            console.error("❌ 토큰 발급 실패:", error.response?.data || error.message);
+        } catch (error) {
+            const axiosError = error as AxiosError;
+            console.error("❌ 토큰 발급 실패:", axiosError.response?.data || axiosError.message);
             cachedToken = null;
             tokenExpiry = null;
             throw error;
@@ -122,9 +123,10 @@ export const getStockPrice = async (stockCode: string) => {
         });
 
         return response.data;
-    } catch (error: any) {
-        console.error("주식 정보 조회 실패:", error.message);
-        console.error("에러 응답:", error.response?.data);
+    } catch (error) {
+        const axiosError = error as AxiosError;
+        console.error("주식 정보 조회 실패:", axiosError.message);
+        console.error("에러 응답:", axiosError.response?.data);
         throw error;
     }
 };
@@ -167,12 +169,26 @@ export const getStockInfo = async (stockCode: string) => {
         }
 
         return response.data;
-    } catch (error: any) {
-        console.error("종목 기본정보 조회 실패:", error.message);
-        console.error("에러 응답:", error.response?.data);
+    } catch (error) {
+        const axiosError = error as AxiosError;
+        console.error("종목 기본정보 조회 실패:", axiosError.message);
+        console.error("에러 응답:", axiosError.response?.data);
         throw error;
     }
 };
+
+// 거래량 상위 종목 타입 정의
+interface VolumeRankStock {
+    hts_kor_isnm: string;
+    mksc_shrn_iscd: string;
+    data_rank: string;
+    stck_prpr: string;
+    prdy_vrss: string;
+    prdy_vrss_sign: string;
+    prdy_ctrt: string;
+    acml_vol: string;
+    [key: string]: string;
+}
 
 // 거래량 상위 종목 조회 (종목명 포함)
 export const getVolumeRankStocks = async () => {
@@ -199,7 +215,7 @@ export const getVolumeRankStocks = async () => {
         if (response.data.rt_cd === "0" && response.data.output) {
             // ETF, 지수 등 필터링
             const filteredOutput = response.data.output
-                .filter((stock: any) => {
+                .filter((stock: VolumeRankStock) => {
                     const name = stock.hts_kor_isnm || "";
                     const code = stock.mksc_shrn_iscd || "";
 
@@ -232,7 +248,7 @@ export const getVolumeRankStocks = async () => {
 
             // 각 종목의 상세 정보 조회 (종목명 포함)
             const detailedStocks = await Promise.all(
-                filteredOutput.map(async (stock: any) => {
+                filteredOutput.map(async (stock: VolumeRankStock) => {
                     try {
                         const detailData = await getStockPrice(stock.mksc_shrn_iscd);
 
@@ -241,7 +257,7 @@ export const getVolumeRankStocks = async () => {
                             ...stock,
                             hts_kor_isnm: detailData.output?.prdt_name || stock.hts_kor_isnm || stock.mksc_shrn_iscd,
                         };
-                    } catch (error) {
+                    } catch {
                         console.error(`${stock.mksc_shrn_iscd} 상세 조회 실패`);
                         return stock; // 실패해도 기본 데이터 유지
                     }
@@ -259,9 +275,10 @@ export const getVolumeRankStocks = async () => {
         }
 
         return response.data;
-    } catch (error: any) {
-        console.error("❌ 거래량 상위 종목 조회 실패:", error);
-        console.error("에러 응답:", error.response?.data);
+    } catch (error) {
+        const axiosError = error as AxiosError;
+        console.error("❌ 거래량 상위 종목 조회 실패:", axiosError);
+        console.error("에러 응답:", axiosError.response?.data);
         throw error;
     }
 };
@@ -288,7 +305,7 @@ export const getStockAskingPrice = async (stockCode: string) => {
     }
 };
 
-export const getStockDailyPrice = async (stockCode: string, period: string = "30") => {
+export const getStockDailyPrice = async (stockCode: string) => {
     try {
         const headers = await getHeaders("FHKST01010400");
 
@@ -416,8 +433,9 @@ export const searchStockByName = async (keyword: string) => {
             fullName: found.ISU_NM,
             listDate: found.LIST_DD,
         };
-    } catch (error: any) {
-        console.error("❌ KRX API 종목명 검색 실패:", error.message);
+    } catch (error) {
+        const err = error as Error;
+        console.error("❌ KRX API 종목명 검색 실패:", err.message);
         throw error;
     }
 };
