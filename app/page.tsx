@@ -42,7 +42,7 @@ export default function HomePage() {
         const initializeData = async () => {
             try {
                 await Promise.allSettled([
-                    axios.get("/api/token/warmup").then(() => console.log("✅ 토큰 준비 완료")),
+                    axios.get("/api/token/warmup").then(),
                     fetchPopularStocks(),
                     fetchVolumeStocks(),
                     fetchGoldPrice(),

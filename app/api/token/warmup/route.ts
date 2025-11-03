@@ -4,8 +4,6 @@ import { getAccessToken } from "@/lib/api/kisApi";
 // 토큰 워밍업 API - 페이지 로드 전에 토큰을 미리 준비
 export async function GET() {
     try {
-        console.log("🔥 토큰 워밍업 시작");
-
         // Redis에 토큰이 없으면 발급, 있으면 재사용
         const token = await getAccessToken();
 

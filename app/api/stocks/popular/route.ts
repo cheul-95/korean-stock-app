@@ -24,8 +24,6 @@ const favoriteCodes = [
 
 export async function GET() {
     try {
-        console.log("🔄 인기종목 조회");
-
         // 병렬 배치 처리로 속도 향상 (4개씩 동시 처리)
         const BATCH_SIZE = 4;
         const results: PopularStock[] = [];
@@ -65,7 +63,7 @@ export async function GET() {
 
             // 다음 배치 전 짧은 딜레이 (마지막 배치가 아닌 경우)
             if (i + BATCH_SIZE < favoriteCodes.length) {
-                await new Promise(resolve => setTimeout(resolve, 100));
+                await new Promise((resolve) => setTimeout(resolve, 100));
             }
         }
 

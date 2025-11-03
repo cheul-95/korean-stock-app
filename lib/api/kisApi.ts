@@ -78,8 +78,6 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
             const axiosError = error as AxiosError<KISErrorResponse>;
 
             if (axiosError.response?.data?.error_code === "EGW00133") {
-                console.log(`⚠️ 토큰 발급 제한 (${i + 1}/${maxRetries})`);
-
                 const redisClient = getRedisClient();
                 if (redisClient) {
                     await redisClient.del(TOKEN_CACHE_KEY);
@@ -88,7 +86,6 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
                 }
 
                 if (i < maxRetries - 1) {
-                    console.log("⏳ 70초 대기...");
                     await new Promise((resolve) => setTimeout(resolve, 70000));
                 }
                 continue;
@@ -96,11 +93,9 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
 
             if (axiosError.response?.status === 429) {
                 const waitTime = delayMs * (i + 1);
-                console.log(`⏳ Rate limit. ${waitTime}ms 대기 (${i + 1}/${maxRetries})`);
                 await new Promise((resolve) => setTimeout(resolve, waitTime));
             } else if (i < maxRetries - 1) {
                 const waitTime = delayMs * Math.pow(2, i);
-                console.log(`⚠️ API 실패. ${waitTime}ms 대기 (${i + 1}/${maxRetries})`);
                 await new Promise((resolve) => setTimeout(resolve, waitTime));
             }
         }
@@ -120,7 +115,6 @@ export const getAccessToken = async (): Promise<string> => {
             const tokenExpiry = await redisClient.get(TOKEN_EXPIRY_KEY);
 
             if (cachedToken && tokenExpiry && Date.now() < parseInt(tokenExpiry)) {
-                console.log("✅ Redis 캐시 토큰 재사용");
                 return cachedToken;
             }
 
@@ -128,14 +122,12 @@ export const getAccessToken = async (): Promise<string> => {
             const lockAcquired = await redisClient.set(TOKEN_LOCK_KEY, "locked", "EX", 10, "NX");
 
             if (!lockAcquired) {
-                console.log("⏳ 다른 인스턴스가 토큰 발급 중... 2초 대기");
                 await new Promise((resolve) => setTimeout(resolve, 2000));
                 return getAccessToken();
             }
 
             try {
                 // 3. 토큰 발급
-                console.log("🔄 새로운 토큰 발급 (Redis)...");
 
                 if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
                     throw new Error("환경변수 미설정: KIS_APP_KEY, KIS_APP_SECRET");
@@ -157,16 +149,12 @@ export const getAccessToken = async (): Promise<string> => {
                 await redisClient.set(TOKEN_CACHE_KEY, token, "EX", 300);
                 await redisClient.set(TOKEN_EXPIRY_KEY, expiry.toString(), "EX", 300);
 
-                console.log("✅ 토큰 발급 성공 (Redis 저장, 5분 유효)");
-
                 return token;
             } finally {
                 await redisClient.del(TOKEN_LOCK_KEY);
             }
         } else {
             // Redis 없으면 매번 새로 발급 (fallback)
-            console.log("⚠️ Redis 없음. 직접 토큰 발급...");
-
             if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
                 throw new Error("환경변수 미설정");
             }
@@ -182,7 +170,6 @@ export const getAccessToken = async (): Promise<string> => {
                 throw new Error("토큰 없음");
             }
 
-            console.log("✅ 토큰 발급 성공 (메모리)");
             return token;
         }
     } catch (error) {
@@ -335,11 +322,11 @@ export const getVolumeRankStocks = async () => {
                             name.length > 0
                         );
                     })
-                    .slice(0, 15);
+                    .slice(0, 10);
 
                 const detailedStocks = await promiseAllWithLimit(
                     filteredOutput,
-                    2, // 2개씩만 동시 호출
+                    10, // 2개씩만 동시 호출
                     async (stock: VolumeRankStock) => {
                         try {
                             const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
