@@ -1,9 +1,21 @@
 import axios, { AxiosError } from "axios";
+import { kv } from "@vercel/kv"; // 🔥 추가
 
 const KIS_BASE_URL = "https://openapi.koreainvestment.com:9443";
 
+// KIS API 에러 응답 타입
+interface KISErrorResponse {
+    error_description?: string;
+    error_code?: string;
+}
+
+// Redis 키
+const TOKEN_CACHE_KEY = "kis_access_token";
+const TOKEN_EXPIRY_KEY = "kis_token_expiry";
+const TOKEN_LOCK_KEY = "kis_token_lock";
+
 // API 호출 제한 설정
-const API_CALL_DELAY = 200; // 200ms로 증가
+const API_CALL_DELAY = 200;
 let lastApiCallTime = 0;
 
 // API 호출 전 대기 (Rate Limiting)
@@ -28,19 +40,13 @@ const promiseAllWithLimit = async <T, R>(items: T[], limit: number, fn: (item: T
         const batchResults = await Promise.all(batch.map(fn));
         results.push(...batchResults);
 
-        // 배치 사이에 추가 딜레이
         if (i + limit < items.length) {
-            await new Promise((resolve) => setTimeout(resolve, 300)); // 300ms로 증가
+            await new Promise((resolve) => setTimeout(resolve, 300));
         }
     }
 
     return results;
 };
-
-interface KISErrorResponse {
-    error_description?: string;
-    error_code?: string;
-}
 
 // Retry 로직이 포함된 API 호출 유틸리티
 const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 3, delayMs = 2000): Promise<T> => {
@@ -52,16 +58,16 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 3, delayMs
             return await fn();
         } catch (error) {
             lastError = error as Error;
-            const axiosError = error as AxiosError<KISErrorResponse>; // 🔥 타입 추가
+            const axiosError = error as AxiosError<KISErrorResponse>;
 
             // 🔥 토큰 에러 특별 처리
             if (axiosError.response?.data?.error_code === "EGW00133") {
                 console.log(`⚠️ 토큰 발급 제한. 65초 대기 후 재시도 (${i + 1}/${maxRetries})`);
-                // 토큰 캐시 초기화
-                cachedToken = null;
-                tokenExpiry = null;
-                tokenPromise = null;
-                // 65초 대기
+                // 🔥 Redis 캐시 초기화
+                await kv.del(TOKEN_CACHE_KEY);
+                await kv.del(TOKEN_EXPIRY_KEY);
+                await kv.del(TOKEN_LOCK_KEY);
+
                 await new Promise((resolve) => setTimeout(resolve, 65000));
                 continue;
             }
@@ -73,7 +79,6 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 3, delayMs
                 console.log(`⏳ Rate limit 도달. ${waitTime}ms 대기 후 재시도 (${i + 1}/${maxRetries})`);
                 await new Promise((resolve) => setTimeout(resolve, waitTime));
             } else if (i < maxRetries - 1) {
-                // 일반 에러인 경우 지수 백오프
                 const waitTime = delayMs * Math.pow(2, i);
                 console.log(`⚠️ API 호출 실패. ${waitTime}ms 대기 후 재시도 (${i + 1}/${maxRetries})`);
                 await new Promise((resolve) => setTimeout(resolve, waitTime));
@@ -84,44 +89,39 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 3, delayMs
     throw lastError;
 };
 
-// 토큰 관련 변수들
-let cachedToken: string | null = null;
-let tokenExpiry: number | null = null;
-let tokenPromise: Promise<string> | null = null;
-let tokenRequestInProgress = false; // 🔥 토큰 요청 중 플래그 추가
-
+// 🔥 Redis 기반 토큰 관리
 export const getAccessToken = async (): Promise<string> => {
-    // 메모리 캐시 확인
-    if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
-        console.log("✅ 캐시된 토큰 재사용");
-        return cachedToken;
-    }
+    try {
+        // 1. Redis에서 캐시된 토큰 확인
+        const cachedToken = await kv.get<string>(TOKEN_CACHE_KEY);
+        const tokenExpiry = await kv.get<number>(TOKEN_EXPIRY_KEY);
 
-    // 🔥 이미 토큰 발급 중이면 대기 (중복 요청 방지)
-    if (tokenPromise) {
-        console.log("⏳ 토큰 발급 대기 중...");
-        return tokenPromise;
-    }
+        if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
+            console.log("✅ Redis 캐시된 토큰 재사용");
+            return cachedToken;
+        }
 
-    // 🔥 토큰 요청이 진행 중이면 잠시 대기
-    if (tokenRequestInProgress) {
-        console.log("⏳ 다른 요청이 토큰 발급 중... 1초 대기");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        // 재귀 호출로 다시 확인
-        return getAccessToken();
-    }
+        // 2. 분산 락으로 중복 토큰 발급 방지
+        const lockAcquired = await kv.set(TOKEN_LOCK_KEY, "locked", {
+            nx: true, // 키가 없을 때만 설정
+            ex: 10, // 10초 후 자동 삭제
+        });
 
-    if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
-        const missingVars = [];
-        if (!process.env.KIS_APP_KEY) missingVars.push("KIS_APP_KEY");
-        if (!process.env.KIS_APP_SECRET) missingVars.push("KIS_APP_SECRET");
-        throw new Error(`환경변수가 설정되지 않았습니다: ${missingVars.join(", ")}`);
-    }
+        if (!lockAcquired) {
+            // 다른 인스턴스가 토큰 발급 중
+            console.log("⏳ 다른 인스턴스가 토큰 발급 중... 2초 대기");
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            // 재귀 호출로 다시 확인
+            return getAccessToken();
+        }
 
-    tokenRequestInProgress = true; // 🔥 토큰 요청 시작
-    tokenPromise = (async () => {
         try {
+            // 3. 토큰 발급
             console.log("🔄 새로운 토큰 발급 요청...");
+
+            if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
+                throw new Error("KIS_APP_KEY 또는 KIS_APP_SECRET이 설정되지 않았습니다.");
+            }
 
             const response = await axios.post(`${KIS_BASE_URL}/oauth2/tokenP`, {
                 grant_type: "client_credentials",
@@ -134,26 +134,23 @@ export const getAccessToken = async (): Promise<string> => {
                 throw new Error("토큰을 받아오지 못했습니다.");
             }
 
-            cachedToken = token;
-            // 🔥 토큰 유효기간을 55초로 단축 (1분 제한 고려)
-            tokenExpiry = Date.now() + 55 * 1000;
+            // 4. Redis에 토큰 저장 (55초 유효)
+            const expiry = Date.now() + 55 * 1000;
+            await kv.set(TOKEN_CACHE_KEY, token);
+            await kv.set(TOKEN_EXPIRY_KEY, expiry);
 
-            console.log("✅ 토큰 발급 성공 (55초 유효)");
+            console.log("✅ 토큰 발급 성공 및 Redis 저장 (55초 유효)");
 
             return token;
-        } catch (error) {
-            const axiosError = error as AxiosError;
-            console.error("❌ 토큰 발급 실패:", axiosError.response?.data || axiosError.message);
-            cachedToken = null;
-            tokenExpiry = null;
-            throw error;
         } finally {
-            tokenPromise = null;
-            tokenRequestInProgress = false; // 🔥 토큰 요청 완료
+            // 5. 락 해제
+            await kv.del(TOKEN_LOCK_KEY);
         }
-    })();
-
-    return tokenPromise;
+    } catch (error) {
+        const axiosError = error as AxiosError<KISErrorResponse>;
+        console.error("❌ 토큰 발급 실패:", axiosError.response?.data || (error as Error).message);
+        throw error;
+    }
 };
 
 const getHeaders = async (trId: string) => {
@@ -196,7 +193,7 @@ export const getStockPrice = async (stockCode: string) => {
     });
 };
 
-// 종목 기본정보 조회
+// 종목 기본정보 조회 (종목명, 업종명 등)
 export const getStockInfo = async (stockCode: string) => {
     return apiCallWithRetry(async () => {
         try {
@@ -241,7 +238,7 @@ export const getStockInfo = async (stockCode: string) => {
     });
 };
 
-// 거래량 상위 종목 조회
+// 거래량 상위 종목 타입 정의
 interface VolumeRankStock {
     hts_kor_isnm: string;
     mksc_shrn_iscd: string;
@@ -254,6 +251,7 @@ interface VolumeRankStock {
     [key: string]: string;
 }
 
+// 거래량 상위 종목 조회 (종목명 포함)
 export const getVolumeRankStocks = async () => {
     return apiCallWithRetry(async () => {
         try {
@@ -308,24 +306,19 @@ export const getVolumeRankStocks = async () => {
                     .slice(0, 15);
 
                 // 🔥 동시 호출 수를 3개로 줄임
-                const detailedStocks = await promiseAllWithLimit(
-                    filteredOutput,
-                    3, // 5개 → 3개로 감소
-                    async (stock: VolumeRankStock) => {
-                        try {
-                            const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
+                const detailedStocks = await promiseAllWithLimit(filteredOutput, 3, async (stock: VolumeRankStock) => {
+                    try {
+                        const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
 
-                            return {
-                                ...stock,
-                                hts_kor_isnm:
-                                    detailData.output?.prdt_name || stock.hts_kor_isnm || stock.mksc_shrn_iscd,
-                            };
-                        } catch (error) {
-                            console.error(`${stock.mksc_shrn_iscd} 상세 조회 실패:`, error);
-                            return stock;
-                        }
+                        return {
+                            ...stock,
+                            hts_kor_isnm: detailData.output?.prdt_name || stock.hts_kor_isnm || stock.mksc_shrn_iscd,
+                        };
+                    } catch (error) {
+                        console.error(`${stock.mksc_shrn_iscd} 상세 조회 실패:`, error);
+                        return stock;
                     }
-                );
+                });
 
                 const finalStocks = detailedStocks.slice(0, 10);
 
@@ -397,7 +390,7 @@ export const getStockDailyPrice = async (stockCode: string) => {
     });
 };
 
-// KRX API
+// ✅ KRX API 타입 정의
 interface KRXStockItem {
     ISU_CD: string;
     ISU_SRT_CD: string;
@@ -412,6 +405,7 @@ interface KRXResponse {
     OutBlock_1?: KRXStockItem[];
 }
 
+// ✅ KRX API를 사용한 종목명 검색
 export const searchStockByName = async (keyword: string) => {
     try {
         const response = await fetch("http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd", {
