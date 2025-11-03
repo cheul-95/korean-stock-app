@@ -113,27 +113,33 @@ const saveTokenToFile = (token: string, expiry: number) => {
 export const getAccessToken = async (): Promise<string> => {
     // 메모리 캐시 확인
     if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
+        console.log("✅ 메모리 캐시에서 토큰 사용");
         return cachedToken;
     }
 
     // 파일 캐시 확인
     const fileToken = loadTokenFromFile();
     if (fileToken) {
+        console.log("✅ 파일 캐시에서 토큰 로드");
         cachedToken = fileToken.token;
         tokenExpiry = fileToken.expiry;
         return fileToken.token;
     }
 
-    // 마지막 토큰 발급 실패로부터 61초가 지나지 않았다면 재시도 방지
+    // 마지막 토큰 발급 실패로부터 30초가 지나지 않았다면 재시도 방지
+    // (KIS API는 1분당 1회 제한이지만, 30초 후 재시도로 완화)
     if (lastTokenFailureTime) {
         const timeSinceFailure = Date.now() - lastTokenFailureTime;
-        const waitTime = 61000; // 61초 (안전하게)
+        const waitTime = 30000; // 30초로 단축
 
         if (timeSinceFailure < waitTime) {
             const remainingTime = Math.ceil((waitTime - timeSinceFailure) / 1000);
             throw new Error(
                 `토큰 발급이 최근에 실패했습니다. ${remainingTime}초 후에 다시 시도해주세요. (1분당 1회 제한)`
             );
+        } else {
+            // 대기 시간이 지났으면 실패 기록 리셋
+            lastTokenFailureTime = null;
         }
     }
 
@@ -142,11 +148,15 @@ export const getAccessToken = async (): Promise<string> => {
     }
 
     if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
-        throw new Error("KIS_APP_KEY 또는 KIS_APP_SECRET이 설정되지 않았습니다.");
+        const missingVars = [];
+        if (!process.env.KIS_APP_KEY) missingVars.push("KIS_APP_KEY");
+        if (!process.env.KIS_APP_SECRET) missingVars.push("KIS_APP_SECRET");
+        throw new Error(`환경변수가 설정되지 않았습니다: ${missingVars.join(", ")}. .env.local 파일을 확인해주세요.`);
     }
 
     tokenPromise = (async () => {
         try {
+            console.log("🔑 새로운 액세스 토큰 발급 시도...");
             const response = await axios.post(`${KIS_BASE_URL}/oauth2/tokenP`, {
                 grant_type: "client_credentials",
                 appkey: process.env.KIS_APP_KEY,
@@ -168,6 +178,7 @@ export const getAccessToken = async (): Promise<string> => {
             // 파일에 저장
             saveTokenToFile(token, tokenExpiry);
 
+            console.log("✅ 액세스 토큰 발급 성공 (유효기간: 22시간)");
             return token;
         } catch (error) {
             const axiosError = error as AxiosError;
