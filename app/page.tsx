@@ -26,50 +26,23 @@ export default function HomePage() {
     const router = useRouter();
 
     useEffect(() => {
-        //fetchPopularStocks();
+        fetchPopularStocks();
         fetchVolumeStocks();
         fetchGoldPrice();
     }, []);
 
     // 인기 종목 조회 (고정된 8개 종목의 현재가)
     const fetchPopularStocks = async () => {
-        const favoriteCodes = [
-            { name: "삼성전자", code: "005930" },
-            { name: "SK하이닉스", code: "000660" },
-            { name: "NAVER", code: "035420" },
-            { name: "카카오", code: "035720" },
-            { name: "현대차", code: "005380" },
-            { name: "LG에너지솔루션", code: "373220" },
-            { name: "삼성바이오로직스", code: "207940" },
-            { name: "기아", code: "000270" },
-        ];
-
         try {
-            const results = await Promise.all(
-                favoriteCodes.map(async (item) => {
-                    try {
-                        const { data } = await axios.get(`/api/stocks/${item.code}?type=price`);
-                        return {
-                            name: item.name,
-                            code: item.code,
-                            price: data.output?.stck_prpr,
-                            change: data.output?.prdy_vrss,
-                            changeRate: data.output?.prdy_ctrt,
-                            priceSign: data.output?.prdy_vrss_sign,
-                        };
-                    } catch (error) {
-                        console.error(`${item.name} 조회 실패:`, error);
-                        return {
-                            name: item.name,
-                            code: item.code,
-                            price: null,
-                        };
-                    }
-                })
-            );
-            setPopularStocks(results);
+            const { data } = await axios.get("/api/stocks/popular");
+            if (data.success && data.data) {
+                setPopularStocks(data.data);
+            } else {
+                setPopularStocks([]);
+            }
         } catch (error) {
             console.error("인기 종목 가격 조회 실패:", error);
+            setPopularStocks([]);
         } finally {
             setPopularLoading(false);
         }
@@ -161,7 +134,7 @@ export default function HomePage() {
 
             <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
                 {/* 인기 종목 */}
-                {/* <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+                <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
                     <div>
                         <h3 className="text-lg font-semibold mb-3">인기 종목</h3>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -206,7 +179,7 @@ export default function HomePage() {
                             })}
                         </div>
                     </div>
-                </div> */}
+                </div>
 
                 {/* 거래량 상위 종목 */}
                 <div className="bg-white rounded-lg shadow-lg p-6">

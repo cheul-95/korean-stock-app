@@ -7,6 +7,79 @@ const KIS_BASE_URL = "https://openapi.koreainvestment.com:9443";
 // 토큰 캐시 파일 경로
 const TOKEN_CACHE_PATH = path.join(process.cwd(), ".token-cache.json");
 
+// API 호출 제한 설정
+const API_CALL_DELAY = 200; // 각 API 호출 사이의 최소 지연 시간 (ms)
+let lastApiCallTime = 0;
+
+// API 호출 전 대기 (Rate Limiting)
+const waitForRateLimit = async () => {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallTime;
+
+    if (timeSinceLastCall < API_CALL_DELAY) {
+        const waitTime = API_CALL_DELAY - timeSinceLastCall;
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+
+    lastApiCallTime = Date.now();
+};
+
+// 제한된 동시 호출 유틸리티
+const promiseAllWithLimit = async <T, R>(
+    items: T[],
+    limit: number,
+    fn: (item: T) => Promise<R>
+): Promise<R[]> => {
+    const results: R[] = [];
+
+    for (let i = 0; i < items.length; i += limit) {
+        const batch = items.slice(i, i + limit);
+        const batchResults = await Promise.all(batch.map(fn));
+        results.push(...batchResults);
+
+        // 배치 사이에 추가 딜레이 (마지막 배치가 아닌 경우)
+        if (i + limit < items.length) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    }
+
+    return results;
+};
+
+// Retry 로직이 포함된 API 호출 유틸리티
+const apiCallWithRetry = async <T>(
+    fn: () => Promise<T>,
+    maxRetries = 3,
+    delayMs = 1000
+): Promise<T> => {
+    let lastError: Error | undefined;
+
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            await waitForRateLimit();
+            return await fn();
+        } catch (error) {
+            lastError = error as Error;
+            const axiosError = error as AxiosError;
+
+            // Rate limit 에러인 경우 더 긴 대기
+            if (axiosError.response?.status === 429) {
+                const retryAfter = axiosError.response?.headers?.['retry-after'];
+                const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : delayMs * (i + 1);
+                console.log(`⏳ Rate limit 도달. ${waitTime}ms 대기 후 재시도 (${i + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+            } else if (i < maxRetries - 1) {
+                // 일반 에러인 경우 지수 백오프
+                const waitTime = delayMs * Math.pow(2, i);
+                console.log(`⚠️ API 호출 실패. ${waitTime}ms 대기 후 재시도 (${i + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+            }
+        }
+    }
+
+    throw lastError;
+};
+
 // 토큰 관련 변수들
 let cachedToken: string | null = null;
 let tokenExpiry: number | null = null;
@@ -110,71 +183,75 @@ const getHeaders = async (trId: string) => {
 
 // 주식 현재가 조회
 export const getStockPrice = async (stockCode: string) => {
-    try {
-        // 실전투자: FHKST01010100, 모의투자: FHPST01710000
-        const headers = await getHeaders("FHKST01010100");
+    return apiCallWithRetry(async () => {
+        try {
+            // 실전투자: FHKST01010100, 모의투자: FHPST01710000
+            const headers = await getHeaders("FHKST01010100");
 
-        const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price-2`, {
-            headers,
-            params: {
-                FID_COND_MRKT_DIV_CODE: "J",
-                FID_INPUT_ISCD: stockCode,
-            },
-        });
+            const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price-2`, {
+                headers,
+                params: {
+                    FID_COND_MRKT_DIV_CODE: "J",
+                    FID_INPUT_ISCD: stockCode,
+                },
+            });
 
-        return response.data;
-    } catch (error) {
-        const axiosError = error as AxiosError;
-        console.error("주식 정보 조회 실패:", axiosError.message);
-        console.error("에러 응답:", axiosError.response?.data);
-        throw error;
-    }
+            return response.data;
+        } catch (error) {
+            const axiosError = error as AxiosError;
+            console.error("주식 정보 조회 실패:", axiosError.message);
+            console.error("에러 응답:", axiosError.response?.data);
+            throw error;
+        }
+    });
 };
 
 // 종목 기본정보 조회 (종목명, 업종명 등)
 export const getStockInfo = async (stockCode: string) => {
-    try {
-        // 실전투자: FHKST01010100
-        const headers = await getHeaders("CTPF1604R");
+    return apiCallWithRetry(async () => {
+        try {
+            // 실전투자: FHKST01010100
+            const headers = await getHeaders("CTPF1604R");
 
-        const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/search-info`, {
-            headers,
-            params: {
-                PRDT_TYPE_CD: "300", // 300: 국내주식
-                PDNO: stockCode, // 종목코드
-            },
-        });
+            const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/search-info`, {
+                headers,
+                params: {
+                    PRDT_TYPE_CD: "300", // 300: 국내주식
+                    PDNO: stockCode, // 종목코드
+                },
+            });
 
-        // 필요한 정보만 추출하여 반환
-        if (response.data.rt_cd === "0" && response.data.output) {
-            const output = response.data.output;
+            // 필요한 정보만 추출하여 반환
+            if (response.data.rt_cd === "0" && response.data.output) {
+                const output = response.data.output;
 
-            // output 래핑 제거하고 바로 반환
-            return {
-                rt_cd: "0",
-                msg_cd: "SUCCESS",
-                msg1: "정상처리",
-                stockCode: stockCode,
-                stockName: output.prdt_abrv_name || stockCode,
-                stockNameEng: output.prdt_eng_name || "",
-                marketType: output.std_pdno?.startsWith("0") ? "KOSDAQ" : "KOSPI",
-                sectorCode: output.한국_업종_코드 || "",
-                sectorName: output.한국_업종_명 || "",
-                listedShares: output.lstg_stqt || "0",
-                capital: output.cpfn || "0",
-                faceValue: output.stck_prpr || "0",
-                companyNameKor: output.prdt_name || "",
-                companyNameEng: output.prdt_eng_name || "",
-            };
+                // output 래핑 제거하고 바로 반환
+                return {
+                    rt_cd: "0",
+                    msg_cd: "SUCCESS",
+                    msg1: "정상처리",
+                    stockCode: stockCode,
+                    stockName: output.prdt_abrv_name || stockCode,
+                    stockNameEng: output.prdt_eng_name || "",
+                    marketType: output.std_pdno?.startsWith("0") ? "KOSDAQ" : "KOSPI",
+                    sectorCode: output.한국_업종_코드 || "",
+                    sectorName: output.한국_업종_명 || "",
+                    listedShares: output.lstg_stqt || "0",
+                    capital: output.cpfn || "0",
+                    faceValue: output.stck_prpr || "0",
+                    companyNameKor: output.prdt_name || "",
+                    companyNameEng: output.prdt_eng_name || "",
+                };
+            }
+
+            return response.data;
+        } catch (error) {
+            const axiosError = error as AxiosError;
+            console.error("종목 기본정보 조회 실패:", axiosError.message);
+            console.error("에러 응답:", axiosError.response?.data);
+            throw error;
         }
-
-        return response.data;
-    } catch (error) {
-        const axiosError = error as AxiosError;
-        console.error("종목 기본정보 조회 실패:", axiosError.message);
-        console.error("에러 응답:", axiosError.response?.data);
-        throw error;
-    }
+    });
 };
 
 // 거래량 상위 종목 타입 정의
@@ -192,25 +269,26 @@ interface VolumeRankStock {
 
 // 거래량 상위 종목 조회 (종목명 포함)
 export const getVolumeRankStocks = async () => {
-    try {
-        const headers = await getHeaders("FHPST01710000");
+    return apiCallWithRetry(async () => {
+        try {
+            const headers = await getHeaders("FHPST01710000");
 
-        const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank`, {
-            headers,
-            params: {
-                FID_COND_MRKT_DIV_CODE: "J",
-                FID_COND_SCR_DIV_CODE: "20171",
-                FID_INPUT_ISCD: "0000",
-                FID_DIV_CLS_CODE: "0",
-                FID_BLNG_CLS_CODE: "0",
-                FID_TRGT_CLS_CODE: "111111111",
-                FID_TRGT_EXLS_CLS_CODE: "0000000000",
-                FID_INPUT_PRICE_1: "",
-                FID_INPUT_PRICE_2: "",
-                FID_VOL_CNT: "",
-                FID_INPUT_DATE_1: "",
-            },
-        });
+            const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank`, {
+                headers,
+                params: {
+                    FID_COND_MRKT_DIV_CODE: "J",
+                    FID_COND_SCR_DIV_CODE: "20171",
+                    FID_INPUT_ISCD: "0000",
+                    FID_DIV_CLS_CODE: "0",
+                    FID_BLNG_CLS_CODE: "0",
+                    FID_TRGT_CLS_CODE: "111111111",
+                    FID_TRGT_EXLS_CLS_CODE: "0000000000",
+                    FID_INPUT_PRICE_1: "",
+                    FID_INPUT_PRICE_2: "",
+                    FID_VOL_CNT: "",
+                    FID_INPUT_DATE_1: "",
+                },
+            });
 
         if (response.data.rt_cd === "0" && response.data.output) {
             // ETF, 지수 등 필터링
@@ -246,22 +324,24 @@ export const getVolumeRankStocks = async () => {
                 })
                 .slice(0, 15); // 상위 15개 (일부 실패 고려)
 
-            // 각 종목의 상세 정보 조회 (종목명 포함)
-            const detailedStocks = await Promise.all(
-                filteredOutput.map(async (stock: VolumeRankStock) => {
+            // 각 종목의 상세 정보 조회 (종목명 포함) - 3개씩 배치로 처리
+            const detailedStocks = await promiseAllWithLimit(
+                filteredOutput,
+                3, // 한 번에 3개씩만 동시 호출
+                async (stock: VolumeRankStock) => {
                     try {
-                        const detailData = await getStockPrice(stock.mksc_shrn_iscd);
+                        const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
 
                         // 종목명을 상세 조회에서 가져옴 (prdt_name 필드)
                         return {
                             ...stock,
                             hts_kor_isnm: detailData.output?.prdt_name || stock.hts_kor_isnm || stock.mksc_shrn_iscd,
                         };
-                    } catch {
-                        console.error(`${stock.mksc_shrn_iscd} 상세 조회 실패`);
+                    } catch (error) {
+                        console.error(`${stock.mksc_shrn_iscd} 상세 조회 실패:`, error);
                         return stock; // 실패해도 기본 데이터 유지
                     }
-                })
+                }
             );
 
             const finalStocks = detailedStocks.slice(0, 10); // 최종 10개만
@@ -274,59 +354,64 @@ export const getVolumeRankStocks = async () => {
             };
         }
 
-        return response.data;
-    } catch (error) {
-        const axiosError = error as AxiosError;
-        console.error("❌ 거래량 상위 종목 조회 실패:", axiosError);
-        console.error("에러 응답:", axiosError.response?.data);
-        throw error;
-    }
+            return response.data;
+        } catch (error) {
+            const axiosError = error as AxiosError;
+            console.error("❌ 거래량 상위 종목 조회 실패:", axiosError);
+            console.error("에러 응답:", axiosError.response?.data);
+            throw error;
+        }
+    });
 };
 
 export const getStockAskingPrice = async (stockCode: string) => {
-    try {
-        const headers = await getHeaders("FHKST01010200");
+    return apiCallWithRetry(async () => {
+        try {
+            const headers = await getHeaders("FHKST01010200");
 
-        const response = await axios.get(
-            `${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn`,
-            {
+            const response = await axios.get(
+                `${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn`,
+                {
+                    headers,
+                    params: {
+                        FID_COND_MRKT_DIV_CODE: "J",
+                        FID_INPUT_ISCD: stockCode,
+                    },
+                }
+            );
+
+            return response.data;
+        } catch (error) {
+            console.error("호가 정보 조회 실패:", error);
+            throw error;
+        }
+    });
+};
+
+export const getStockDailyPrice = async (stockCode: string) => {
+    return apiCallWithRetry(async () => {
+        try {
+            const headers = await getHeaders("FHKST01010400");
+
+            const endDate = new Date().toISOString().split("T")[0].replace(/-/g, "");
+
+            const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price`, {
                 headers,
                 params: {
                     FID_COND_MRKT_DIV_CODE: "J",
                     FID_INPUT_ISCD: stockCode,
+                    FID_PERIOD_DIV_CODE: "D",
+                    FID_ORG_ADJ_PRC: "0",
+                    FID_INPUT_DATE_1: endDate,
                 },
-            }
-        );
+            });
 
-        return response.data;
-    } catch (error) {
-        console.error("호가 정보 조회 실패:", error);
-        throw error;
-    }
-};
-
-export const getStockDailyPrice = async (stockCode: string) => {
-    try {
-        const headers = await getHeaders("FHKST01010400");
-
-        const endDate = new Date().toISOString().split("T")[0].replace(/-/g, "");
-
-        const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price`, {
-            headers,
-            params: {
-                FID_COND_MRKT_DIV_CODE: "J",
-                FID_INPUT_ISCD: stockCode,
-                FID_PERIOD_DIV_CODE: "D",
-                FID_ORG_ADJ_PRC: "0",
-                FID_INPUT_DATE_1: endDate,
-            },
-        });
-
-        return response.data;
-    } catch (error) {
-        console.error("일별 시세 조회 실패:", error);
-        throw error;
-    }
+            return response.data;
+        } catch (error) {
+            console.error("일별 시세 조회 실패:", error);
+            throw error;
+        }
+    });
 };
 
 // ✅ KRX API 타입 정의
