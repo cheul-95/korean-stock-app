@@ -41,12 +41,8 @@ export default function HomePage() {
         // 토큰을 먼저 준비하고, 그 후 모든 API 호출
         const initializeData = async () => {
             try {
-                // 1. 토큰 워밍업 (Redis에 토큰 준비)
-                await axios.get("/api/token/warmup");
-                console.log("✅ 토큰 준비 완료");
-
-                // 2. 모든 API 동시 호출 (같은 토큰 사용)
                 await Promise.allSettled([
+                    axios.get("/api/token/warmup").then(() => console.log("✅ 토큰 준비 완료")),
                     fetchPopularStocks(),
                     fetchVolumeStocks(),
                     fetchGoldPrice(),

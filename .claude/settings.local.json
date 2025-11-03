@@ -13,7 +13,13 @@
       "Bash(timeout /t 2)",
       "Bash(if exist .token-cache.json del .token-cache.json)",
       "Bash(test:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(nul)",
+      "Bash(dir:*)",
+      "WebFetch(domain:korean-stock-adgyhk0un-leesangcheols-projects.vercel.app)",
+      "Bash(git ls-tree:*)",
+      "Bash(gh api:*)",
+      "Bash(git commit --allow-empty -m \"trigger deploy\")"
     ],
     "deny": [],
     "ask": []
