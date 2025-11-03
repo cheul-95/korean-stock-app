@@ -84,6 +84,7 @@ const apiCallWithRetry = async <T>(
 let cachedToken: string | null = null;
 let tokenExpiry: number | null = null;
 let tokenPromise: Promise<string> | null = null;
+let lastTokenFailureTime: number | null = null; // 마지막 토큰 발급 실패 시간
 
 // 파일에서 토큰 로드
 const loadTokenFromFile = (): { token: string; expiry: number } | null => {
@@ -123,6 +124,19 @@ export const getAccessToken = async (): Promise<string> => {
         return fileToken.token;
     }
 
+    // 마지막 토큰 발급 실패로부터 61초가 지나지 않았다면 재시도 방지
+    if (lastTokenFailureTime) {
+        const timeSinceFailure = Date.now() - lastTokenFailureTime;
+        const waitTime = 61000; // 61초 (안전하게)
+
+        if (timeSinceFailure < waitTime) {
+            const remainingTime = Math.ceil((waitTime - timeSinceFailure) / 1000);
+            throw new Error(
+                `토큰 발급이 최근에 실패했습니다. ${remainingTime}초 후에 다시 시도해주세요. (1분당 1회 제한)`
+            );
+        }
+    }
+
     if (tokenPromise) {
         return tokenPromise;
     }
@@ -145,7 +159,11 @@ export const getAccessToken = async (): Promise<string> => {
             }
 
             cachedToken = token;
-            tokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
+            // 토큰 유효기간을 22시간으로 설정 (보수적으로 설정하여 만료 전 갱신)
+            tokenExpiry = Date.now() + 22 * 60 * 60 * 1000;
+
+            // 토큰 발급 성공 시 실패 기록 리셋
+            lastTokenFailureTime = null;
 
             // 파일에 저장
             saveTokenToFile(token, tokenExpiry);
@@ -154,6 +172,13 @@ export const getAccessToken = async (): Promise<string> => {
         } catch (error) {
             const axiosError = error as AxiosError;
             console.error("❌ 토큰 발급 실패:", axiosError.response?.data || axiosError.message);
+
+            // 403 에러 (Rate Limit)인 경우 실패 시간 기록
+            if (axiosError.response?.status === 403) {
+                lastTokenFailureTime = Date.now();
+                console.error("⚠️ 토큰 발급 Rate Limit 도달. 61초 후 재시도 가능.");
+            }
+
             cachedToken = null;
             tokenExpiry = null;
             throw error;
