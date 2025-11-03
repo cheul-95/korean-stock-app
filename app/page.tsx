@@ -15,8 +15,20 @@ interface PopularStockData {
     priceSign?: string;
 }
 
+// 인기 종목 초기 데이터 (가격 로딩 전에도 종목명은 표시)
+const INITIAL_POPULAR_STOCKS: PopularStockData[] = [
+    { name: "삼성전자", code: "005930", price: null },
+    { name: "SK하이닉스", code: "000660", price: null },
+    { name: "NAVER", code: "035420", price: null },
+    { name: "카카오", code: "035720", price: null },
+    { name: "현대차", code: "005380", price: null },
+    { name: "LG에너지솔루션", code: "373220", price: null },
+    { name: "삼성바이오로직스", code: "207940", price: null },
+    { name: "기아", code: "000270", price: null },
+];
+
 export default function HomePage() {
-    const [popularStocks, setPopularStocks] = useState<PopularStockData[]>([]); // 인기 종목 (고정 8개)
+    const [popularStocks, setPopularStocks] = useState<PopularStockData[]>(INITIAL_POPULAR_STOCKS); // 인기 종목 (고정 8개)
     const [volumeStocks, setVolumeStocks] = useState<PopularStock[]>([]); // 거래량 상위 (실시간 10개)
     const [goldPrice, setGoldPrice] = useState<GoldPrice | null>(null);
     const [volumeLoading, setVolumeLoading] = useState(true);
@@ -37,12 +49,11 @@ export default function HomePage() {
             const { data } = await axios.get("/api/stocks/popular");
             if (data.success && data.data) {
                 setPopularStocks(data.data);
-            } else {
-                setPopularStocks([]);
             }
+            // 실패 시에도 초기 데이터 유지 (빈 배열로 설정하지 않음)
         } catch (error) {
             console.error("인기 종목 가격 조회 실패:", error);
-            setPopularStocks([]);
+            // 에러 발생 시에도 초기 종목명은 유지
         } finally {
             setPopularLoading(false);
         }

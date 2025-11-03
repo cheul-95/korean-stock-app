@@ -8,7 +8,7 @@ const KIS_BASE_URL = "https://openapi.koreainvestment.com:9443";
 const TOKEN_CACHE_PATH = path.join(process.cwd(), ".token-cache.json");
 
 // API 호출 제한 설정
-const API_CALL_DELAY = 200; // 각 API 호출 사이의 최소 지연 시간 (ms)
+const API_CALL_DELAY = 100; // 각 API 호출 사이의 최소 지연 시간 (ms) - 병렬 처리로 인해 감소
 let lastApiCallTime = 0;
 
 // API 호출 전 대기 (Rate Limiting)
@@ -349,10 +349,10 @@ export const getVolumeRankStocks = async () => {
                 })
                 .slice(0, 15); // 상위 15개 (일부 실패 고려)
 
-            // 각 종목의 상세 정보 조회 (종목명 포함) - 3개씩 배치로 처리
+            // 각 종목의 상세 정보 조회 (종목명 포함) - 5개씩 배치로 처리
             const detailedStocks = await promiseAllWithLimit(
                 filteredOutput,
-                3, // 한 번에 3개씩만 동시 호출
+                5, // 한 번에 5개씩 동시 호출
                 async (stock: VolumeRankStock) => {
                     try {
                         const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
