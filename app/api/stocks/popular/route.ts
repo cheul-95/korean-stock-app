@@ -48,7 +48,7 @@ export async function GET() {
 
         // 병렬 배치 처리로 속도 향상 (4개씩 동시 처리)
         const BATCH_SIZE = 4;
-        const results = [];
+        const results: PopularStock[] = [];
 
         for (let i = 0; i < favoriteCodes.length; i += BATCH_SIZE) {
             const batch = favoriteCodes.slice(i, i + BATCH_SIZE);
