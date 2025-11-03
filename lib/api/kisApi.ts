@@ -3,7 +3,7 @@ import axios, { AxiosError } from "axios";
 const KIS_BASE_URL = "https://openapi.koreainvestment.com:9443";
 
 // API 호출 제한 설정
-const API_CALL_DELAY = 100; // 각 API 호출 사이의 최소 지연 시간 (ms) - 병렬 처리로 인해 감소
+const API_CALL_DELAY = 200; // 200ms로 증가
 let lastApiCallTime = 0;
 
 // API 호출 전 대기 (Rate Limiting)
@@ -13,18 +13,14 @@ const waitForRateLimit = async () => {
 
     if (timeSinceLastCall < API_CALL_DELAY) {
         const waitTime = API_CALL_DELAY - timeSinceLastCall;
-        await new Promise(resolve => setTimeout(resolve, waitTime));
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
     }
 
     lastApiCallTime = Date.now();
 };
 
 // 제한된 동시 호출 유틸리티
-const promiseAllWithLimit = async <T, R>(
-    items: T[],
-    limit: number,
-    fn: (item: T) => Promise<R>
-): Promise<R[]> => {
+const promiseAllWithLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> => {
     const results: R[] = [];
 
     for (let i = 0; i < items.length; i += limit) {
@@ -32,21 +28,22 @@ const promiseAllWithLimit = async <T, R>(
         const batchResults = await Promise.all(batch.map(fn));
         results.push(...batchResults);
 
-        // 배치 사이에 추가 딜레이 (마지막 배치가 아닌 경우)
+        // 배치 사이에 추가 딜레이
         if (i + limit < items.length) {
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise((resolve) => setTimeout(resolve, 300)); // 300ms로 증가
         }
     }
 
     return results;
 };
 
+interface KISErrorResponse {
+    error_description?: string;
+    error_code?: string;
+}
+
 // Retry 로직이 포함된 API 호출 유틸리티
-const apiCallWithRetry = async <T>(
-    fn: () => Promise<T>,
-    maxRetries = 3,
-    delayMs = 1000
-): Promise<T> => {
+const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 3, delayMs = 2000): Promise<T> => {
     let lastError: Error | undefined;
 
     for (let i = 0; i < maxRetries; i++) {
@@ -55,19 +52,31 @@ const apiCallWithRetry = async <T>(
             return await fn();
         } catch (error) {
             lastError = error as Error;
-            const axiosError = error as AxiosError;
+            const axiosError = error as AxiosError<KISErrorResponse>; // 🔥 타입 추가
 
-            // Rate limit 에러인 경우 더 긴 대기
+            // 🔥 토큰 에러 특별 처리
+            if (axiosError.response?.data?.error_code === "EGW00133") {
+                console.log(`⚠️ 토큰 발급 제한. 65초 대기 후 재시도 (${i + 1}/${maxRetries})`);
+                // 토큰 캐시 초기화
+                cachedToken = null;
+                tokenExpiry = null;
+                tokenPromise = null;
+                // 65초 대기
+                await new Promise((resolve) => setTimeout(resolve, 65000));
+                continue;
+            }
+
+            // Rate limit 에러인 경우
             if (axiosError.response?.status === 429) {
-                const retryAfter = axiosError.response?.headers?.['retry-after'];
+                const retryAfter = axiosError.response?.headers?.["retry-after"];
                 const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : delayMs * (i + 1);
                 console.log(`⏳ Rate limit 도달. ${waitTime}ms 대기 후 재시도 (${i + 1}/${maxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, waitTime));
+                await new Promise((resolve) => setTimeout(resolve, waitTime));
             } else if (i < maxRetries - 1) {
                 // 일반 에러인 경우 지수 백오프
                 const waitTime = delayMs * Math.pow(2, i);
                 console.log(`⚠️ API 호출 실패. ${waitTime}ms 대기 후 재시도 (${i + 1}/${maxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, waitTime));
+                await new Promise((resolve) => setTimeout(resolve, waitTime));
             }
         }
     }
@@ -79,27 +88,41 @@ const apiCallWithRetry = async <T>(
 let cachedToken: string | null = null;
 let tokenExpiry: number | null = null;
 let tokenPromise: Promise<string> | null = null;
+let tokenRequestInProgress = false; // 🔥 토큰 요청 중 플래그 추가
 
 export const getAccessToken = async (): Promise<string> => {
-    // 메모리 캐시 확인 (같은 요청 내에서 재사용)
+    // 메모리 캐시 확인
     if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
+        console.log("✅ 캐시된 토큰 재사용");
         return cachedToken;
     }
 
-    // 이미 토큰 발급 중이면 대기
+    // 🔥 이미 토큰 발급 중이면 대기 (중복 요청 방지)
     if (tokenPromise) {
+        console.log("⏳ 토큰 발급 대기 중...");
         return tokenPromise;
+    }
+
+    // 🔥 토큰 요청이 진행 중이면 잠시 대기
+    if (tokenRequestInProgress) {
+        console.log("⏳ 다른 요청이 토큰 발급 중... 1초 대기");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        // 재귀 호출로 다시 확인
+        return getAccessToken();
     }
 
     if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
         const missingVars = [];
         if (!process.env.KIS_APP_KEY) missingVars.push("KIS_APP_KEY");
         if (!process.env.KIS_APP_SECRET) missingVars.push("KIS_APP_SECRET");
-        throw new Error(`환경변수가 설정되지 않았습니다: ${missingVars.join(", ")}. .env.local 파일을 확인해주세요.`);
+        throw new Error(`환경변수가 설정되지 않았습니다: ${missingVars.join(", ")}`);
     }
 
+    tokenRequestInProgress = true; // 🔥 토큰 요청 시작
     tokenPromise = (async () => {
         try {
+            console.log("🔄 새로운 토큰 발급 요청...");
+
             const response = await axios.post(`${KIS_BASE_URL}/oauth2/tokenP`, {
                 grant_type: "client_credentials",
                 appkey: process.env.KIS_APP_KEY,
@@ -112,8 +135,10 @@ export const getAccessToken = async (): Promise<string> => {
             }
 
             cachedToken = token;
-            // 토큰 유효기간을 23시간으로 설정
-            tokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
+            // 🔥 토큰 유효기간을 55초로 단축 (1분 제한 고려)
+            tokenExpiry = Date.now() + 55 * 1000;
+
+            console.log("✅ 토큰 발급 성공 (55초 유효)");
 
             return token;
         } catch (error) {
@@ -124,6 +149,7 @@ export const getAccessToken = async (): Promise<string> => {
             throw error;
         } finally {
             tokenPromise = null;
+            tokenRequestInProgress = false; // 🔥 토큰 요청 완료
         }
     })();
 
@@ -150,7 +176,6 @@ const getHeaders = async (trId: string) => {
 export const getStockPrice = async (stockCode: string) => {
     return apiCallWithRetry(async () => {
         try {
-            // 실전투자: FHKST01010100, 모의투자: FHPST01710000
             const headers = await getHeaders("FHKST01010100");
 
             const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price-2`, {
@@ -171,26 +196,23 @@ export const getStockPrice = async (stockCode: string) => {
     });
 };
 
-// 종목 기본정보 조회 (종목명, 업종명 등)
+// 종목 기본정보 조회
 export const getStockInfo = async (stockCode: string) => {
     return apiCallWithRetry(async () => {
         try {
-            // 실전투자: FHKST01010100
             const headers = await getHeaders("CTPF1604R");
 
             const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/search-info`, {
                 headers,
                 params: {
-                    PRDT_TYPE_CD: "300", // 300: 국내주식
-                    PDNO: stockCode, // 종목코드
+                    PRDT_TYPE_CD: "300",
+                    PDNO: stockCode,
                 },
             });
 
-            // 필요한 정보만 추출하여 반환
             if (response.data.rt_cd === "0" && response.data.output) {
                 const output = response.data.output;
 
-                // output 래핑 제거하고 바로 반환
                 return {
                     rt_cd: "0",
                     msg_cd: "SUCCESS",
@@ -219,7 +241,7 @@ export const getStockInfo = async (stockCode: string) => {
     });
 };
 
-// 거래량 상위 종목 타입 정의
+// 거래량 상위 종목 조회
 interface VolumeRankStock {
     hts_kor_isnm: string;
     mksc_shrn_iscd: string;
@@ -232,7 +254,6 @@ interface VolumeRankStock {
     [key: string]: string;
 }
 
-// 거래량 상위 종목 조회 (종목명 포함)
 export const getVolumeRankStocks = async () => {
     return apiCallWithRetry(async () => {
         try {
@@ -255,69 +276,66 @@ export const getVolumeRankStocks = async () => {
                 },
             });
 
-        if (response.data.rt_cd === "0" && response.data.output) {
-            // ETF, 지수 등 필터링
-            const filteredOutput = response.data.output
-                .filter((stock: VolumeRankStock) => {
-                    const name = stock.hts_kor_isnm || "";
-                    const code = stock.mksc_shrn_iscd || "";
+            if (response.data.rt_cd === "0" && response.data.output) {
+                const filteredOutput = response.data.output
+                    .filter((stock: VolumeRankStock) => {
+                        const name = stock.hts_kor_isnm || "";
+                        const code = stock.mksc_shrn_iscd || "";
 
-                    // 종목코드가 6자리 숫자인지 확인
-                    const isValidCode = /^\d{6}$/.test(code);
+                        const isValidCode = /^\d{6}$/.test(code);
 
-                    // ETF, 지수, 스팩 등 제외
-                    return (
-                        isValidCode &&
-                        !name.includes("KODEX") &&
-                        !name.includes("TIGER") &&
-                        !name.includes("ACE") &&
-                        !name.includes("ARIRANG") &&
-                        !name.includes("KBSTAR") &&
-                        !name.includes("HANARO") &&
-                        !name.includes("SOL") &&
-                        !name.includes("ETF") &&
-                        !name.includes("ETN") &&
-                        !name.includes("KOSPI") &&
-                        !name.includes("KOSDAQ") &&
-                        !name.includes("KRX") &&
-                        !name.includes("리츠") &&
-                        !name.includes("스팩") &&
-                        !name.includes("SPAC") &&
-                        !name.includes("선물") &&
-                        name.length > 0
-                    );
-                })
-                .slice(0, 15); // 상위 15개 (일부 실패 고려)
+                        return (
+                            isValidCode &&
+                            !name.includes("KODEX") &&
+                            !name.includes("TIGER") &&
+                            !name.includes("ACE") &&
+                            !name.includes("ARIRANG") &&
+                            !name.includes("KBSTAR") &&
+                            !name.includes("HANARO") &&
+                            !name.includes("SOL") &&
+                            !name.includes("ETF") &&
+                            !name.includes("ETN") &&
+                            !name.includes("KOSPI") &&
+                            !name.includes("KOSDAQ") &&
+                            !name.includes("KRX") &&
+                            !name.includes("리츠") &&
+                            !name.includes("스팩") &&
+                            !name.includes("SPAC") &&
+                            !name.includes("선물") &&
+                            name.length > 0
+                        );
+                    })
+                    .slice(0, 15);
 
-            // 각 종목의 상세 정보 조회 (종목명 포함) - 5개씩 배치로 처리
-            const detailedStocks = await promiseAllWithLimit(
-                filteredOutput,
-                5, // 한 번에 5개씩 동시 호출
-                async (stock: VolumeRankStock) => {
-                    try {
-                        const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
+                // 🔥 동시 호출 수를 3개로 줄임
+                const detailedStocks = await promiseAllWithLimit(
+                    filteredOutput,
+                    3, // 5개 → 3개로 감소
+                    async (stock: VolumeRankStock) => {
+                        try {
+                            const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
 
-                        // 종목명을 상세 조회에서 가져옴 (prdt_name 필드)
-                        return {
-                            ...stock,
-                            hts_kor_isnm: detailData.output?.prdt_name || stock.hts_kor_isnm || stock.mksc_shrn_iscd,
-                        };
-                    } catch (error) {
-                        console.error(`${stock.mksc_shrn_iscd} 상세 조회 실패:`, error);
-                        return stock; // 실패해도 기본 데이터 유지
+                            return {
+                                ...stock,
+                                hts_kor_isnm:
+                                    detailData.output?.prdt_name || stock.hts_kor_isnm || stock.mksc_shrn_iscd,
+                            };
+                        } catch (error) {
+                            console.error(`${stock.mksc_shrn_iscd} 상세 조회 실패:`, error);
+                            return stock;
+                        }
                     }
-                }
-            );
+                );
 
-            const finalStocks = detailedStocks.slice(0, 10); // 최종 10개만
+                const finalStocks = detailedStocks.slice(0, 10);
 
-            return {
-                rt_cd: "0",
-                msg_cd: "SUCCESS",
-                msg1: "정상처리",
-                output: finalStocks,
-            };
-        }
+                return {
+                    rt_cd: "0",
+                    msg_cd: "SUCCESS",
+                    msg1: "정상처리",
+                    output: finalStocks,
+                };
+            }
 
             return response.data;
         } catch (error) {
@@ -379,7 +397,7 @@ export const getStockDailyPrice = async (stockCode: string) => {
     });
 };
 
-// ✅ KRX API 타입 정의
+// KRX API
 interface KRXStockItem {
     ISU_CD: string;
     ISU_SRT_CD: string;
@@ -394,7 +412,6 @@ interface KRXResponse {
     OutBlock_1?: KRXStockItem[];
 }
 
-// ✅ KRX API를 사용한 종목명 검색
 export const searchStockByName = async (keyword: string) => {
     try {
         const response = await fetch("http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd", {
@@ -425,7 +442,6 @@ export const searchStockByName = async (keyword: string) => {
 
         const searchKeyword = keyword.replace(/\s+/g, "").toLowerCase();
 
-        // 모든 매칭 결과 찾기
         const matches = list.filter((item) => {
             const abbrev = item.ISU_ABBRV?.replace(/\s+/g, "").toLowerCase() || "";
             const fullName = item.ISU_NM?.replace(/\s+/g, "").toLowerCase() || "";
@@ -436,7 +452,6 @@ export const searchStockByName = async (keyword: string) => {
             return null;
         }
 
-        // 1️⃣ 검색어와 정확히 일치하는 종목 찾기 (최우선)
         const exactMatch = matches.find((item) => {
             const abbrev = item.ISU_ABBRV?.replace(/\s+/g, "").toLowerCase() || "";
             const fullName = item.ISU_NM?.replace(/\s+/g, "").toLowerCase() || "";
@@ -444,7 +459,6 @@ export const searchStockByName = async (keyword: string) => {
         });
 
         if (exactMatch) {
-            // 정확히 일치해도 보통주 우선
             const isPreferredStock =
                 !exactMatch.ISU_ABBRV.includes("우") &&
                 !exactMatch.ISU_ABBRV.includes("1우") &&
@@ -463,7 +477,6 @@ export const searchStockByName = async (keyword: string) => {
             }
         }
 
-        // 2️⃣ 보통주 우선 선택 (우선주, 신주인수권 등 제외)
         const found =
             matches.find((item) => {
                 const stockName = item.ISU_ABBRV || item.ISU_NM;
