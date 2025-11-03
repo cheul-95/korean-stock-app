@@ -92,6 +92,9 @@ export default function StockDetailPage({ params }: { params: Promise<{ code: st
         }
 
         try {
+            // 토큰 워밍업 후 모든 API 호출
+            await axios.get("/api/token/warmup");
+
             const [priceRes, askingRes, dailyRes, infoRes] = await Promise.all([
                 axios.get(`/api/stocks/${decodedCode}?type=price`),
                 axios.get(`/api/stocks/${decodedCode}?type=asking`),

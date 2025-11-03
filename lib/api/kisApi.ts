@@ -152,12 +152,12 @@ export const getAccessToken = async (): Promise<string> => {
                     throw new Error("토큰 없음");
                 }
 
-                // 4. Redis에 토큰 저장 (50초 유효)
-                const expiry = Date.now() + 50 * 1000;
-                await redisClient.set(TOKEN_CACHE_KEY, token, "EX", 50);
-                await redisClient.set(TOKEN_EXPIRY_KEY, expiry.toString(), "EX", 50);
+                // 4. Redis에 토큰 저장 (5분 유효)
+                const expiry = Date.now() + 5 * 60 * 1000;
+                await redisClient.set(TOKEN_CACHE_KEY, token, "EX", 300);
+                await redisClient.set(TOKEN_EXPIRY_KEY, expiry.toString(), "EX", 300);
 
-                console.log("✅ 토큰 발급 성공 (Redis 저장, 50초 유효)");
+                console.log("✅ 토큰 발급 성공 (Redis 저장, 5분 유효)");
 
                 return token;
             } finally {

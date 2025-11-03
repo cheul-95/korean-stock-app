@@ -38,9 +38,29 @@ export default function HomePage() {
     const router = useRouter();
 
     useEffect(() => {
-        fetchPopularStocks();
-        fetchVolumeStocks();
-        fetchGoldPrice();
+        // 토큰을 먼저 준비하고, 그 후 모든 API 호출
+        const initializeData = async () => {
+            try {
+                // 1. 토큰 워밍업 (Redis에 토큰 준비)
+                await axios.get("/api/token/warmup");
+                console.log("✅ 토큰 준비 완료");
+
+                // 2. 모든 API 동시 호출 (같은 토큰 사용)
+                await Promise.allSettled([
+                    fetchPopularStocks(),
+                    fetchVolumeStocks(),
+                    fetchGoldPrice(),
+                ]);
+            } catch (error) {
+                console.error("초기화 오류:", error);
+                // 토큰 워밍업 실패해도 API 호출 시도
+                fetchPopularStocks();
+                fetchVolumeStocks();
+                fetchGoldPrice();
+            }
+        };
+
+        initializeData();
     }, []);
 
     // 인기 종목 조회 (고정된 8개 종목의 현재가)
