@@ -1,11 +1,6 @@
 import axios, { AxiosError } from "axios";
-import fs from "fs";
-import path from "path";
 
 const KIS_BASE_URL = "https://openapi.koreainvestment.com:9443";
-
-// 토큰 캐시 파일 경로
-const TOKEN_CACHE_PATH = path.join(process.cwd(), ".token-cache.json");
 
 // API 호출 제한 설정
 const API_CALL_DELAY = 100; // 각 API 호출 사이의 최소 지연 시간 (ms) - 병렬 처리로 인해 감소
@@ -84,65 +79,14 @@ const apiCallWithRetry = async <T>(
 let cachedToken: string | null = null;
 let tokenExpiry: number | null = null;
 let tokenPromise: Promise<string> | null = null;
-let lastTokenFailureTime: number | null = null; // 마지막 토큰 발급 실패 시간
-
-// 파일에서 토큰 로드
-const loadTokenFromFile = (): { token: string; expiry: number } | null => {
-    try {
-        if (fs.existsSync(TOKEN_CACHE_PATH)) {
-            const data = JSON.parse(fs.readFileSync(TOKEN_CACHE_PATH, "utf-8"));
-            if (data.token && data.expiry && Date.now() < data.expiry) {
-                return data;
-            }
-        }
-    } catch (error) {
-        console.error("파일에서 토큰 로드 실패:", error);
-    }
-    return null;
-};
-
-// 파일에 토큰 저장
-const saveTokenToFile = (token: string, expiry: number) => {
-    try {
-        fs.writeFileSync(TOKEN_CACHE_PATH, JSON.stringify({ token, expiry }));
-    } catch (error) {
-        console.error("토큰 파일 저장 실패:", error);
-    }
-};
 
 export const getAccessToken = async (): Promise<string> => {
-    // 메모리 캐시 확인
+    // 메모리 캐시 확인 (같은 요청 내에서 재사용)
     if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
-        console.log("✅ 메모리 캐시에서 토큰 사용");
         return cachedToken;
     }
 
-    // 파일 캐시 확인
-    const fileToken = loadTokenFromFile();
-    if (fileToken) {
-        console.log("✅ 파일 캐시에서 토큰 로드");
-        cachedToken = fileToken.token;
-        tokenExpiry = fileToken.expiry;
-        return fileToken.token;
-    }
-
-    // 마지막 토큰 발급 실패로부터 30초가 지나지 않았다면 재시도 방지
-    // (KIS API는 1분당 1회 제한이지만, 30초 후 재시도로 완화)
-    if (lastTokenFailureTime) {
-        const timeSinceFailure = Date.now() - lastTokenFailureTime;
-        const waitTime = 30000; // 30초로 단축
-
-        if (timeSinceFailure < waitTime) {
-            const remainingTime = Math.ceil((waitTime - timeSinceFailure) / 1000);
-            throw new Error(
-                `토큰 발급이 최근에 실패했습니다. ${remainingTime}초 후에 다시 시도해주세요. (1분당 1회 제한)`
-            );
-        } else {
-            // 대기 시간이 지났으면 실패 기록 리셋
-            lastTokenFailureTime = null;
-        }
-    }
-
+    // 이미 토큰 발급 중이면 대기
     if (tokenPromise) {
         return tokenPromise;
     }
@@ -156,7 +100,6 @@ export const getAccessToken = async (): Promise<string> => {
 
     tokenPromise = (async () => {
         try {
-            console.log("🔑 새로운 액세스 토큰 발급 시도...");
             const response = await axios.post(`${KIS_BASE_URL}/oauth2/tokenP`, {
                 grant_type: "client_credentials",
                 appkey: process.env.KIS_APP_KEY,
@@ -169,27 +112,13 @@ export const getAccessToken = async (): Promise<string> => {
             }
 
             cachedToken = token;
-            // 토큰 유효기간을 22시간으로 설정 (보수적으로 설정하여 만료 전 갱신)
-            tokenExpiry = Date.now() + 22 * 60 * 60 * 1000;
+            // 토큰 유효기간을 23시간으로 설정
+            tokenExpiry = Date.now() + 23 * 60 * 60 * 1000;
 
-            // 토큰 발급 성공 시 실패 기록 리셋
-            lastTokenFailureTime = null;
-
-            // 파일에 저장
-            saveTokenToFile(token, tokenExpiry);
-
-            console.log("✅ 액세스 토큰 발급 성공 (유효기간: 22시간)");
             return token;
         } catch (error) {
             const axiosError = error as AxiosError;
             console.error("❌ 토큰 발급 실패:", axiosError.response?.data || axiosError.message);
-
-            // 403 에러 (Rate Limit)인 경우 실패 시간 기록
-            if (axiosError.response?.status === 403) {
-                lastTokenFailureTime = Date.now();
-                console.error("⚠️ 토큰 발급 Rate Limit 도달. 61초 후 재시도 가능.");
-            }
-
             cachedToken = null;
             tokenExpiry = null;
             throw error;

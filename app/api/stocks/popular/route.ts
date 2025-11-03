@@ -11,15 +11,6 @@ interface PopularStock {
     priceSign?: string;
 }
 
-// 인기 종목 캐시
-interface CachedPopularStocks {
-    data: PopularStock[];
-    timestamp: number;
-}
-
-let popularStocksCache: CachedPopularStocks | null = null;
-const CACHE_DURATION = 5 * 60 * 1000; // 5분 캐싱
-
 const favoriteCodes = [
     { name: "삼성전자", code: "005930" },
     { name: "SK하이닉스", code: "000660" },
@@ -33,18 +24,7 @@ const favoriteCodes = [
 
 export async function GET() {
     try {
-        // 캐시 확인
-        const now = Date.now();
-        if (popularStocksCache && now - popularStocksCache.timestamp < CACHE_DURATION) {
-            console.log("✅ 인기종목 캐시 사용");
-            return NextResponse.json({
-                success: true,
-                data: popularStocksCache.data,
-                cached: true,
-            });
-        }
-
-        console.log("🔄 인기종목 새로 조회");
+        console.log("🔄 인기종목 조회");
 
         // 병렬 배치 처리로 속도 향상 (4개씩 동시 처리)
         const BATCH_SIZE = 4;
@@ -89,16 +69,9 @@ export async function GET() {
             }
         }
 
-        // 캐시 저장
-        popularStocksCache = {
-            data: results,
-            timestamp: now,
-        };
-
         return NextResponse.json({
             success: true,
             data: results,
-            cached: false,
         });
     } catch (error) {
         console.error("인기 종목 조회 실패:", error);
