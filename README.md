@@ -14,7 +14,7 @@
 ### 주요 기능
 
 | **실시간 주가 조회** | **종목 상세 정보** | **차트 시각화** |
-|:---:|:---:|:---:|
+|<img width="250" height="800" alt="image" src="https://github.com/user-attachments/assets/633c95c3-7353-44c3-92ae-f3295e9efdf3" />|<img width="250" height="800" alt="image" src="https://github.com/user-attachments/assets/4f63a215-b94e-4773-bf26-20600cbd3448" />|<img width="250" height="800" alt="image" src="https://github.com/user-attachments/assets/3b09c191-7ced-490a-9f38-b6588bc0bd7f" />|
 |:---:|:---:|:---:|
 | 주식 종목 실시간 가격 조회 | 개별 종목의 상세 정보 제공 | 다양한 차트로 시세 변동 확인 |
 | • 종목명 검색 기능<br>• 실시간 가격 업데이트<br>• 등락률 표시 | • 현재가, 시가, 고가, 저가<br>• 거래량 정보<br>• 전일 대비 등락률 | • Recharts 라이브러리 활용<br>• 일봉, 주봉, 월봉 차트<br>• 인터랙티브 차트 |
