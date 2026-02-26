@@ -30,18 +30,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         return NextResponse.json(data);
     } catch (error) {
         const axiosError = error as import("axios").AxiosError;
+        const status = axiosError.response?.status;
         const kisResponse = axiosError.response?.data;
-        console.error("API 오류:", {
-            status: axiosError.response?.status,
-            kisError: kisResponse, // KIS API 실제 에러 응답 (Vercel 로그에서 확인)
-            message: (error as Error).message,
-        });
+        console.error("API 오류:", { status, kisError: kisResponse, message: (error as Error).message });
+
+        const is403 = status === 403;
+        const errorMessage = is403
+            ? "KIS API 권한 없음(403). APP_KEY·APP_SECRET·IP 허용 목록을 확인하세요."
+            : error instanceof Error
+              ? error.message
+              : "주식 데이터를 가져오는데 실패했습니다";
+
         return NextResponse.json(
-            {
-                error: error instanceof Error ? error.message : "주식 데이터를 가져오는데 실패했습니다",
-                kisError: kisResponse,
-            },
-            { status: 500 }
+            { error: errorMessage, kisError: kisResponse },
+            { status: is403 ? 403 : 500 }
         );
     }
 }

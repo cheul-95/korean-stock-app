@@ -7,17 +7,18 @@ export async function GET() {
 
         return NextResponse.json(data);
     } catch (error) {
-        console.error("=== API 에러 ===");
-        console.error("에러:", error instanceof Error ? error.message : "Unknown error");
-        console.error("상세:", error);
+        const axiosError = error as import("axios").AxiosError;
+        const status = axiosError.response?.status;
+        console.error("=== API 에러 ===", { status, message: (error as Error).message });
 
-        return NextResponse.json(
-            {
-                error: "API 호출 실패",
-                message: error instanceof Error ? error.message : "Unknown error",
-            },
-            { status: 500 }
-        );
+        const is403 = status === 403;
+        const message = is403
+            ? "KIS API 권한 없음(403). APP_KEY·APP_SECRET·IP 허용 목록을 확인하세요."
+            : error instanceof Error
+              ? error.message
+              : "Unknown error";
+
+        return NextResponse.json({ error: "API 호출 실패", message }, { status: is403 ? 403 : 500 });
     }
 }
 

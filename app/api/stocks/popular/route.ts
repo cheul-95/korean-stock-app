@@ -53,13 +53,18 @@ export async function GET() {
             data: results,
         });
     } catch (error) {
+        const axiosError = error as import("axios").AxiosError;
+        const status = axiosError.response?.status;
         console.error("인기 종목 조회 실패:", error);
+        const is403 = status === 403;
+        const errorMessage = is403
+            ? "KIS API 권한 없음(403). APP_KEY·APP_SECRET·IP 허용 목록을 확인하세요."
+            : error instanceof Error
+              ? error.message
+              : "인기 종목 데이터를 가져오는데 실패했습니다";
         return NextResponse.json(
-            {
-                success: false,
-                error: error instanceof Error ? error.message : "인기 종목 데이터를 가져오는데 실패했습니다",
-            },
-            { status: 500 }
+            { success: false, error: errorMessage },
+            { status: is403 ? 403 : 500 }
         );
     }
 }

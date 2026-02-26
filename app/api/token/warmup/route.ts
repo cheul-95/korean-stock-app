@@ -13,13 +13,18 @@ export async function GET() {
             hasToken: !!token,
         });
     } catch (error) {
+        const axiosError = error as import("axios").AxiosError;
+        const status = axiosError.response?.status;
         console.error("❌ 토큰 워밍업 실패:", error);
+        const is403 = status === 403;
+        const errorMessage = is403
+            ? "KIS API 권한 없음(403). APP_KEY·APP_SECRET·IP 허용 목록을 확인하세요."
+            : error instanceof Error
+              ? error.message
+              : "토큰 준비 실패";
         return NextResponse.json(
-            {
-                success: false,
-                error: error instanceof Error ? error.message : "토큰 준비 실패",
-            },
-            { status: 500 }
+            { success: false, error: errorMessage },
+            { status: is403 ? 403 : 500 }
         );
     }
 }

@@ -52,8 +52,9 @@ const runWithRateLimit = async <T>(fn: () => Promise<T>): Promise<T> => {
     const myTurn = nextAllowedStart.then(
         () => new Promise<void>((r) => setTimeout(r, API_CALL_DELAY_MS))
     );
-    nextAllowedStart = myTurn.then(fn).then(() => {}).catch(() => {});
-    return myTurn.then(fn);
+    const result = myTurn.then(fn);
+    nextAllowedStart = result.then(() => {}).catch(() => {});
+    return result;
 };
 
 const promiseAllWithLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> => {
@@ -82,7 +83,10 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
             lastError = error as Error;
             const axiosError = error as AxiosError<KISErrorResponse>;
 
-            if (axiosError.response?.data?.error_code === "EGW00133") {
+            // 토큰 만료/무효(또는 403 권한 없음) 시 캐시 삭제 후 재시도
+            const isTokenOrForbidden =
+                axiosError.response?.data?.error_code === "EGW00133" || axiosError.response?.status === 403;
+            if (isTokenOrForbidden) {
                 memoryCachedToken = null;
                 memoryCachedExpiry = 0;
                 const redisClient = getRedisClient();
@@ -91,9 +95,11 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
                     await redisClient.del(TOKEN_EXPIRY_KEY);
                     await redisClient.del(TOKEN_LOCK_KEY);
                 }
-
+                if (axiosError.response?.status === 403) {
+                    console.error("KIS API 403(권한 없음). 토큰 갱신 후 재시도. APP_KEY·IP 허용 목록 확인 필요.");
+                }
                 if (i < maxRetries - 1) {
-                    await new Promise((resolve) => setTimeout(resolve, 70000));
+                    await new Promise((resolve) => setTimeout(resolve, 3000));
                 }
                 continue;
             }
