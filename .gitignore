@@ -44,6 +44,10 @@ next-env.d.ts
 .token-cache.json
 .vercel
 
+# amplify backend (CLI 설정 충돌 방지)
+amplify/backend/
+amplify/team-provider-info.json
+
 #amplify-do-not-edit-begin
 amplify/\#current-cloud-backend
 amplify/.config/local-*
