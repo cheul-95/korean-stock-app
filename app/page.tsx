@@ -38,58 +38,71 @@ export default function HomePage() {
     const router = useRouter();
 
     useEffect(() => {
-        // 토큰을 먼저 준비하고, 그 후 모든 API 호출
+        // 토큰 워밍업 후, API 호출을 시차를 두어 보내서 KIS 레이트리밋·500 감소
         const initializeData = async () => {
             try {
-                await Promise.allSettled([
-                    axios.get("/api/token/warmup").then(),
-                    fetchPopularStocks(),
-                    fetchVolumeStocks(),
-                    fetchGoldPrice(),
-                ]);
-            } catch (error) {
-                console.error("초기화 오류:", error);
-                // 토큰 워밍업 실패해도 API 호출 시도
-                fetchPopularStocks();
-                fetchVolumeStocks();
-                fetchGoldPrice();
+                await axios.get("/api/token/warmup");
+            } catch {
+                // 워밍업 실패해도 계속 진행
             }
+            // 동시 폭주 방지: popular → volumeRank → gold 순으로 약간씩 지연 후 호출
+            const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+            await delay(200);
+            fetchPopularStocks();
+            await delay(600);
+            fetchVolumeStocks();
+            await delay(400);
+            fetchGoldPrice();
         };
 
         initializeData();
     }, []);
 
-    // 인기 종목 조회 (고정된 8개 종목의 현재가)
+    // 인기 종목 조회 (고정된 8개 종목의 현재가). 5xx 시 1회 재시도
     const fetchPopularStocks = async () => {
-        try {
-            const { data } = await axios.get("/api/stocks/popular");
-            if (data.success && data.data) {
-                setPopularStocks(data.data);
+        const tryFetch = async (isRetry = false) => {
+            try {
+                const { data } = await axios.get("/api/stocks/popular");
+                if (data.success && data.data) {
+                    setPopularStocks(data.data);
+                }
+            } catch (error) {
+                const status = axios.isAxiosError(error) ? error.response?.status ?? 0 : 0;
+                if ((status >= 500 || status === 0) && !isRetry) {
+                    await new Promise((r) => setTimeout(r, 2000));
+                    return tryFetch(true);
+                }
+                console.error("인기 종목 가격 조회 실패:", error);
+            } finally {
+                setPopularLoading(false);
             }
-            // 실패 시에도 초기 데이터 유지 (빈 배열로 설정하지 않음)
-        } catch (error) {
-            console.error("인기 종목 가격 조회 실패:", error);
-            // 에러 발생 시에도 초기 종목명은 유지
-        } finally {
-            setPopularLoading(false);
-        }
+        };
+        await tryFetch();
     };
 
-    // 거래량 상위 종목 조회
+    // 거래량 상위 종목 조회. 5xx 시 1회 재시도
     const fetchVolumeStocks = async () => {
-        try {
-            const { data } = await axios.get("/api/stocks/volumeRank");
-            if (data.output && Array.isArray(data.output)) {
-                setVolumeStocks(data.output.slice(0, 10));
-            } else {
+        const tryFetch = async (isRetry = false) => {
+            try {
+                const { data } = await axios.get("/api/stocks/volumeRank");
+                if (data.output && Array.isArray(data.output)) {
+                    setVolumeStocks(data.output.slice(0, 10));
+                } else {
+                    setVolumeStocks([]);
+                }
+            } catch (error) {
+                const status = axios.isAxiosError(error) ? error.response?.status ?? 0 : 0;
+                if ((status >= 500 || status === 0) && !isRetry) {
+                    await new Promise((r) => setTimeout(r, 2000));
+                    return tryFetch(true);
+                }
+                console.error("거래량 상위 종목 조회 실패:", error);
                 setVolumeStocks([]);
+            } finally {
+                setVolumeLoading(false);
             }
-        } catch (error) {
-            console.error("거래량 상위 종목 조회 실패:", error);
-            setVolumeStocks([]);
-        } finally {
-            setVolumeLoading(false);
-        }
+        };
+        await tryFetch();
     };
 
     const fetchGoldPrice = async () => {
