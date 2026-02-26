@@ -84,8 +84,8 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
             const axiosError = error as AxiosError<KISErrorResponse>;
 
             // 토큰 만료/무효(또는 403 권한 없음) 시 캐시 삭제 후 재시도
-            const isTokenOrForbidden =
-                axiosError.response?.data?.error_code === "EGW00133" || axiosError.response?.status === 403;
+            const isEGW00133 = axiosError.response?.data?.error_code === "EGW00133";
+            const isTokenOrForbidden = isEGW00133 || axiosError.response?.status === 403;
             if (isTokenOrForbidden) {
                 memoryCachedToken = null;
                 memoryCachedExpiry = 0;
@@ -93,10 +93,15 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
                 if (redisClient) {
                     await redisClient.del(TOKEN_CACHE_KEY);
                     await redisClient.del(TOKEN_EXPIRY_KEY);
-                    await redisClient.del(TOKEN_LOCK_KEY);
+                    // TOKEN_LOCK_KEY는 절대 여기서 삭제하지 않음 - getAccessToken 분산 락 파괴 방지
                 }
                 if (axiosError.response?.status === 403) {
                     console.error("KIS API 403(권한 없음). 토큰 갱신 후 재시도. APP_KEY·IP 허용 목록 확인 필요.");
+                }
+                if (isEGW00133) {
+                    // EGW00133: 1분당 1회 제한 - 재시도해도 같은 에러. 즉시 실패 처리
+                    console.error("KIS API EGW00133: 토큰 발급 1분당 1회 제한. 재시도 불가.");
+                    break;
                 }
                 if (i < maxRetries - 1) {
                     await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -171,13 +176,30 @@ export const getAccessToken = async (): Promise<string> => {
                     throw new Error("환경변수 미설정: KIS_APP_KEY, KIS_APP_SECRET");
                 }
 
-                const response = await axios.post(`${KIS_BASE_URL}/oauth2/tokenP`, {
-                    grant_type: "client_credentials",
-                    appkey: process.env.KIS_APP_KEY,
-                    appsecret: process.env.KIS_APP_SECRET,
-                });
+                let tokenResponse;
+                try {
+                    tokenResponse = await axios.post(`${KIS_BASE_URL}/oauth2/tokenP`, {
+                        grant_type: "client_credentials",
+                        appkey: process.env.KIS_APP_KEY,
+                        appsecret: process.env.KIS_APP_SECRET,
+                    });
+                } catch (tokenErr) {
+                    const tokenAxiosErr = tokenErr as AxiosError<KISErrorResponse>;
+                    if (tokenAxiosErr.response?.data?.error_code === "EGW00133") {
+                        // 다른 인스턴스가 방금 토큰을 발급했을 수 있음 - 5초 후 Redis 재확인
+                        console.error("토큰 발급 EGW00133: 다른 인스턴스 토큰 대기 후 Redis 재확인");
+                        await new Promise((r) => setTimeout(r, 5000));
+                        const waitedToken = await redisClient.get(TOKEN_CACHE_KEY);
+                        const waitedExpiry = await redisClient.get(TOKEN_EXPIRY_KEY);
+                        if (waitedToken && waitedExpiry && Date.now() < parseInt(waitedExpiry)) {
+                            setMemoryToken(waitedToken, Math.max(1, (parseInt(waitedExpiry) - Date.now()) / 1000));
+                            return waitedToken;
+                        }
+                    }
+                    throw tokenErr;
+                }
 
-                const token = response.data.access_token;
+                const token = tokenResponse.data.access_token;
                 if (!token) {
                     throw new Error("토큰 없음");
                 }
