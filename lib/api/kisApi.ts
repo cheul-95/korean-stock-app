@@ -34,20 +34,21 @@ const TOKEN_CACHE_KEY = "kis_access_token";
 const TOKEN_EXPIRY_KEY = "kis_token_expiry";
 const TOKEN_LOCK_KEY = "kis_token_lock";
 
-// API 호출 제한 설정
-const API_CALL_DELAY = 300;
-let lastApiCallTime = 0;
+// API 호출 제한 설정: 동시 요청 시에도 전역 직렬화로 한도 준수
+const API_CALL_DELAY_MS = 350;
+/** 다음 호출이 시작될 수 있는 시점을 나타내는 Promise (전역 큐) */
+let nextAllowedStart: Promise<void> = Promise.resolve();
 
-const waitForRateLimit = async () => {
-    const now = Date.now();
-    const timeSinceLastCall = now - lastApiCallTime;
-
-    if (timeSinceLastCall < API_CALL_DELAY) {
-        const waitTime = API_CALL_DELAY - timeSinceLastCall;
-        await new Promise((resolve) => setTimeout(resolve, waitTime));
-    }
-
-    lastApiCallTime = Date.now();
+/**
+ * KIS API 호출을 전역 큐에 넣어 순차 실행 + 호출 간 간격 보장.
+ * popular/volumeRank 등 여러 라우트가 동시에 호출해도 한 번에 하나씩만 실행됨.
+ */
+const runWithRateLimit = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const myTurn = nextAllowedStart.then(
+        () => new Promise<void>((r) => setTimeout(r, API_CALL_DELAY_MS))
+    );
+    nextAllowedStart = myTurn.then(fn).then(() => {}).catch(() => {});
+    return myTurn.then(fn);
 };
 
 const promiseAllWithLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> => {
@@ -71,8 +72,7 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
 
     for (let i = 0; i < maxRetries; i++) {
         try {
-            await waitForRateLimit();
-            return await fn();
+            return await runWithRateLimit(fn);
         } catch (error) {
             lastError = error as Error;
             const axiosError = error as AxiosError<KISErrorResponse>;
@@ -335,7 +335,7 @@ export const getVolumeRankStocks = async () => {
 
                 const detailedStocks = await promiseAllWithLimit(
                     filteredOutput,
-                    10, // 2개씩만 동시 호출
+                    1, // KIS 레이트리밋 준수: 1개씩 순차 호출 (전역 큐와 함께 사용)
                     async (stock: VolumeRankStock) => {
                         try {
                             const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
