@@ -1,6 +1,6 @@
 <img width="1322" height="919" alt="image" src="https://github.com/user-attachments/assets/0fcaa8d9-1023-4299-a6ab-6630d805dd89" />
 
-# 한국 주식 정보 대시보드 **(Korean Stock Dashboard)**[https://korean-stock-r0gd0hiqi-leesangcheols-projects.vercel.app/]
+# 한국 주식 정보 대시보드 **(Korean Stock Dashboard)**[https://main.d5arn3jvvurq9.amplifyapp.com/]
 
 ## 프로젝트 소개
 
@@ -40,7 +40,7 @@
 - **Turbopack**: 고속 번들러
 
 ### 배포 및 호스팅
-- **Vercel**: 프론트엔드 배포
+- **AWS amplifyapp**: 배포
 - **GitHub**: 소스 코드 관리
 
 ---
