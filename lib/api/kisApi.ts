@@ -34,6 +34,11 @@ const TOKEN_CACHE_KEY = "kis_access_token";
 const TOKEN_EXPIRY_KEY = "kis_token_expiry";
 const TOKEN_LOCK_KEY = "kis_token_lock";
 
+// Redis 미사용 또는 일시 오류 시 프로세스 내 토큰 캐시 (중복 발급 방지)
+const MEMORY_TOKEN_BUFFER_SEC = 300; // 만료 5분 전에 갱신
+let memoryCachedToken: string | null = null;
+let memoryCachedExpiry = 0; // ms (0 = 없음)
+
 // API 호출 제한 설정: 동시 요청 시에도 전역 직렬화로 한도 준수
 const API_CALL_DELAY_MS = 350;
 /** 다음 호출이 시작될 수 있는 시점을 나타내는 Promise (전역 큐) */
@@ -78,6 +83,8 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
             const axiosError = error as AxiosError<KISErrorResponse>;
 
             if (axiosError.response?.data?.error_code === "EGW00133") {
+                memoryCachedToken = null;
+                memoryCachedExpiry = 0;
                 const redisClient = getRedisClient();
                 if (redisClient) {
                     await redisClient.del(TOKEN_CACHE_KEY);
@@ -104,8 +111,23 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
     throw lastError;
 };
 
+/** 메모리 캐시 유효 여부 (만료 버퍼 적용) */
+const isMemoryTokenValid = () =>
+    !!memoryCachedToken && Date.now() < memoryCachedExpiry - MEMORY_TOKEN_BUFFER_SEC * 1000;
+
+/** 발급된 토큰을 메모리에도 저장 (동일 프로세스 내 재발급 방지) */
+const setMemoryToken = (token: string, expiresInSeconds: number) => {
+    memoryCachedToken = token;
+    memoryCachedExpiry = Date.now() + (expiresInSeconds - 60) * 1000; // 1분 여유
+};
+
 // Redis 기반 토큰 관리
 export const getAccessToken = async (): Promise<string> => {
+    // 0. 프로세스 내 메모리 캐시 우선 사용 (Redis 유무와 관계없이 중복 발급 감소)
+    if (isMemoryTokenValid()) {
+        return memoryCachedToken!;
+    }
+
     const redisClient = getRedisClient();
 
     try {
@@ -115,6 +137,7 @@ export const getAccessToken = async (): Promise<string> => {
             const tokenExpiry = await redisClient.get(TOKEN_EXPIRY_KEY);
 
             if (cachedToken && tokenExpiry && Date.now() < parseInt(tokenExpiry)) {
+                setMemoryToken(cachedToken, Math.max(1, (parseInt(tokenExpiry) - Date.now()) / 1000));
                 return cachedToken;
             }
 
@@ -131,6 +154,8 @@ export const getAccessToken = async (): Promise<string> => {
                 const tokenAfterLock = await redisClient.get(TOKEN_CACHE_KEY);
                 const expiryAfterLock = await redisClient.get(TOKEN_EXPIRY_KEY);
                 if (tokenAfterLock && expiryAfterLock && Date.now() < parseInt(expiryAfterLock)) {
+                    const remainSec = Math.max(1, (parseInt(expiryAfterLock) - Date.now()) / 1000);
+                    setMemoryToken(tokenAfterLock, remainSec);
                     return tokenAfterLock;
                 }
 
@@ -157,13 +182,14 @@ export const getAccessToken = async (): Promise<string> => {
                 const expiry = Date.now() + ttlSeconds * 1000;
                 await redisClient.set(TOKEN_CACHE_KEY, token, "EX", ttlSeconds);
                 await redisClient.set(TOKEN_EXPIRY_KEY, expiry.toString(), "EX", ttlSeconds);
+                setMemoryToken(token, ttlSeconds);
 
                 return token;
             } finally {
                 await redisClient.del(TOKEN_LOCK_KEY);
             }
         } else {
-            // Redis 없으면 매번 새로 발급 (fallback)
+            // Redis 없을 때: 메모리 캐시만 사용 (한 프로세스당 한 번 발급 후 만료까지 재사용)
             if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
                 throw new Error("환경변수 미설정");
             }
@@ -179,6 +205,8 @@ export const getAccessToken = async (): Promise<string> => {
                 throw new Error("토큰 없음");
             }
 
+            const expiresIn = response.data.expires_in ?? 86400;
+            setMemoryToken(token, expiresIn);
             return token;
         }
     } catch (error) {
