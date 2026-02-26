@@ -24,24 +24,33 @@ export async function GET(req: Request) {
     }
 
     try {
-        const response = await fetch("http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd", {
-            method: "POST",
-            headers: {
-                Accept: "application/json, text/javascript, */*; q=0.01",
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                Origin: "http://data.krx.co.kr",
-                Referer: "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201",
-                "User-Agent":
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            body: new URLSearchParams({
-                bld: "dbms/MDC/STAT/standard/MDCSTAT01901",
-                locale: "ko_KR",
-                mktId: "ALL",
-            }),
-        });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        let response: Response;
+        try {
+            response = await fetch("https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd", {
+                method: "POST",
+                headers: {
+                    Accept: "application/json, text/javascript, */*; q=0.01",
+                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    Origin: "https://data.krx.co.kr",
+                    Referer: "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201",
+                    "User-Agent":
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                body: new URLSearchParams({
+                    bld: "dbms/MDC/STAT/standard/MDCSTAT01901",
+                    locale: "ko_KR",
+                    mktId: "ALL",
+                }),
+                signal: controller.signal,
+            });
+        } finally {
+            clearTimeout(timeoutId);
+        }
 
         if (!response.ok) {
             throw new Error(`KRX API responded with status: ${response.status}`);
