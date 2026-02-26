@@ -205,7 +205,7 @@ export const getAccessToken = async (): Promise<string> => {
                 }
 
                 // 4. Redis에 토큰 저장 (실제 만료 시간 기준, 1시간 버퍼 적용)
-                const expiresIn = response.data.expires_in || 86400; // KIS 토큰 유효기간 24시간
+                const expiresIn = tokenResponse.data.expires_in || 86400; // KIS 토큰 유효기간 24시간
                 const ttlSeconds = Math.max(expiresIn - 3600, 3600); // 최소 1시간 보장, 1시간 버퍼
                 const expiry = Date.now() + ttlSeconds * 1000;
                 await redisClient.set(TOKEN_CACHE_KEY, token, "EX", ttlSeconds);
