@@ -141,8 +141,8 @@ export const getAccessToken = async (): Promise<string> => {
                 return cachedToken;
             }
 
-            // 2. 분산 락으로 중복 토큰 발급 방지 (TTL 30초: 토큰 발급 HTTP 요청 지연 대비)
-            const lockAcquired = await redisClient.set(TOKEN_LOCK_KEY, "locked", "EX", 30, "NX");
+            // 2. 분산 락으로 중복 토큰 발급 방지 (TTL 60초: 네트워크 지연 시에도 한 번만 발급)
+            const lockAcquired = await redisClient.set(TOKEN_LOCK_KEY, "locked", "EX", 60, "NX");
 
             if (!lockAcquired) {
                 await new Promise((resolve) => setTimeout(resolve, 2000));
