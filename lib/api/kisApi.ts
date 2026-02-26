@@ -118,8 +118,8 @@ export const getAccessToken = async (): Promise<string> => {
                 return cachedToken;
             }
 
-            // 2. 분산 락으로 중복 토큰 발급 방지
-            const lockAcquired = await redisClient.set(TOKEN_LOCK_KEY, "locked", "EX", 10, "NX");
+            // 2. 분산 락으로 중복 토큰 발급 방지 (TTL 30초: 토큰 발급 HTTP 요청 지연 대비)
+            const lockAcquired = await redisClient.set(TOKEN_LOCK_KEY, "locked", "EX", 30, "NX");
 
             if (!lockAcquired) {
                 await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -127,7 +127,14 @@ export const getAccessToken = async (): Promise<string> => {
             }
 
             try {
-                // 3. 토큰 발급
+                // 3. 락 획득 후 재확인 (다른 프로세스가 락 대기 중 토큰을 이미 저장했을 수 있음)
+                const tokenAfterLock = await redisClient.get(TOKEN_CACHE_KEY);
+                const expiryAfterLock = await redisClient.get(TOKEN_EXPIRY_KEY);
+                if (tokenAfterLock && expiryAfterLock && Date.now() < parseInt(expiryAfterLock)) {
+                    return tokenAfterLock;
+                }
+
+                // 4. 토큰 발급
 
                 if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
                     throw new Error("환경변수 미설정: KIS_APP_KEY, KIS_APP_SECRET");
@@ -144,10 +151,12 @@ export const getAccessToken = async (): Promise<string> => {
                     throw new Error("토큰 없음");
                 }
 
-                // 4. Redis에 토큰 저장 (5분 유효)
-                const expiry = Date.now() + 5 * 60 * 1000;
-                await redisClient.set(TOKEN_CACHE_KEY, token, "EX", 300);
-                await redisClient.set(TOKEN_EXPIRY_KEY, expiry.toString(), "EX", 300);
+                // 4. Redis에 토큰 저장 (실제 만료 시간 기준, 1시간 버퍼 적용)
+                const expiresIn = response.data.expires_in || 86400; // KIS 토큰 유효기간 24시간
+                const ttlSeconds = Math.max(expiresIn - 3600, 3600); // 최소 1시간 보장, 1시간 버퍼
+                const expiry = Date.now() + ttlSeconds * 1000;
+                await redisClient.set(TOKEN_CACHE_KEY, token, "EX", ttlSeconds);
+                await redisClient.set(TOKEN_EXPIRY_KEY, expiry.toString(), "EX", ttlSeconds);
 
                 return token;
             } finally {
@@ -200,7 +209,7 @@ export const getStockPrice = async (stockCode: string) => {
         try {
             const headers = await getHeaders("FHKST01010100");
 
-            const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price-2`, {
+            const response = await axios.get(`${KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price`, {
                 headers,
                 params: {
                     FID_COND_MRKT_DIV_CODE: "J",

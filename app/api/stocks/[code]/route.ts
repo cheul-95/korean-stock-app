@@ -29,10 +29,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
         return NextResponse.json(data);
     } catch (error) {
-        console.error("API 오류:", error);
+        const axiosError = error as import("axios").AxiosError;
+        const kisResponse = axiosError.response?.data;
+        console.error("API 오류:", {
+            status: axiosError.response?.status,
+            kisError: kisResponse, // KIS API 실제 에러 응답 (Vercel 로그에서 확인)
+            message: (error as Error).message,
+        });
         return NextResponse.json(
             {
                 error: error instanceof Error ? error.message : "주식 데이터를 가져오는데 실패했습니다",
+                kisError: kisResponse,
             },
             { status: 500 }
         );
