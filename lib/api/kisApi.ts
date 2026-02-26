@@ -34,27 +34,20 @@ const TOKEN_CACHE_KEY = "kis_access_token";
 const TOKEN_EXPIRY_KEY = "kis_token_expiry";
 const TOKEN_LOCK_KEY = "kis_token_lock";
 
-// Redis 미사용 또는 일시 오류 시 프로세스 내 토큰 캐시 (중복 발급 방지)
-const MEMORY_TOKEN_BUFFER_SEC = 300; // 만료 5분 전에 갱신
-let memoryCachedToken: string | null = null;
-let memoryCachedExpiry = 0; // ms (0 = 없음)
+// API 호출 제한 설정
+const API_CALL_DELAY = 300;
+let lastApiCallTime = 0;
 
-// API 호출 제한 설정: 동시 요청 시에도 전역 직렬화로 한도 준수
-const API_CALL_DELAY_MS = 350;
-/** 다음 호출이 시작될 수 있는 시점을 나타내는 Promise (전역 큐) */
-let nextAllowedStart: Promise<void> = Promise.resolve();
+const waitForRateLimit = async () => {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCallTime;
 
-/**
- * KIS API 호출을 전역 큐에 넣어 순차 실행 + 호출 간 간격 보장.
- * popular/volumeRank 등 여러 라우트가 동시에 호출해도 한 번에 하나씩만 실행됨.
- */
-const runWithRateLimit = async <T>(fn: () => Promise<T>): Promise<T> => {
-    const myTurn = nextAllowedStart.then(
-        () => new Promise<void>((r) => setTimeout(r, API_CALL_DELAY_MS))
-    );
-    const result = myTurn.then(fn);
-    nextAllowedStart = result.then(() => {}).catch(() => {});
-    return result;
+    if (timeSinceLastCall < API_CALL_DELAY) {
+        const waitTime = API_CALL_DELAY - timeSinceLastCall;
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+    }
+
+    lastApiCallTime = Date.now();
 };
 
 const promiseAllWithLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> => {
@@ -78,33 +71,22 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
 
     for (let i = 0; i < maxRetries; i++) {
         try {
-            return await runWithRateLimit(fn);
+            await waitForRateLimit();
+            return await fn();
         } catch (error) {
             lastError = error as Error;
             const axiosError = error as AxiosError<KISErrorResponse>;
 
-            // 토큰 만료/무효(또는 403 권한 없음) 시 캐시 삭제 후 재시도
-            const isEGW00133 = axiosError.response?.data?.error_code === "EGW00133";
-            const isTokenOrForbidden = isEGW00133 || axiosError.response?.status === 403;
-            if (isTokenOrForbidden) {
-                memoryCachedToken = null;
-                memoryCachedExpiry = 0;
+            if (axiosError.response?.data?.error_code === "EGW00133") {
                 const redisClient = getRedisClient();
                 if (redisClient) {
                     await redisClient.del(TOKEN_CACHE_KEY);
                     await redisClient.del(TOKEN_EXPIRY_KEY);
-                    // TOKEN_LOCK_KEY는 절대 여기서 삭제하지 않음 - getAccessToken 분산 락 파괴 방지
+                    await redisClient.del(TOKEN_LOCK_KEY);
                 }
-                if (axiosError.response?.status === 403) {
-                    console.error("KIS API 403(권한 없음). 토큰 갱신 후 재시도. APP_KEY·IP 허용 목록 확인 필요.");
-                }
-                if (isEGW00133) {
-                    // EGW00133: 1분당 1회 제한 - 재시도해도 같은 에러. 즉시 실패 처리
-                    console.error("KIS API EGW00133: 토큰 발급 1분당 1회 제한. 재시도 불가.");
-                    break;
-                }
+
                 if (i < maxRetries - 1) {
-                    await new Promise((resolve) => setTimeout(resolve, 3000));
+                    await new Promise((resolve) => setTimeout(resolve, 70000));
                 }
                 continue;
             }
@@ -122,23 +104,8 @@ const apiCallWithRetry = async <T>(fn: () => Promise<T>, maxRetries = 2, delayMs
     throw lastError;
 };
 
-/** 메모리 캐시 유효 여부 (만료 버퍼 적용) */
-const isMemoryTokenValid = () =>
-    !!memoryCachedToken && Date.now() < memoryCachedExpiry - MEMORY_TOKEN_BUFFER_SEC * 1000;
-
-/** 발급된 토큰을 메모리에도 저장 (동일 프로세스 내 재발급 방지) */
-const setMemoryToken = (token: string, expiresInSeconds: number) => {
-    memoryCachedToken = token;
-    memoryCachedExpiry = Date.now() + (expiresInSeconds - 60) * 1000; // 1분 여유
-};
-
 // Redis 기반 토큰 관리
 export const getAccessToken = async (): Promise<string> => {
-    // 0. 프로세스 내 메모리 캐시 우선 사용 (Redis 유무와 관계없이 중복 발급 감소)
-    if (isMemoryTokenValid()) {
-        return memoryCachedToken!;
-    }
-
     const redisClient = getRedisClient();
 
     try {
@@ -148,12 +115,11 @@ export const getAccessToken = async (): Promise<string> => {
             const tokenExpiry = await redisClient.get(TOKEN_EXPIRY_KEY);
 
             if (cachedToken && tokenExpiry && Date.now() < parseInt(tokenExpiry)) {
-                setMemoryToken(cachedToken, Math.max(1, (parseInt(tokenExpiry) - Date.now()) / 1000));
                 return cachedToken;
             }
 
-            // 2. 분산 락으로 중복 토큰 발급 방지 (TTL 60초: 네트워크 지연 시에도 한 번만 발급)
-            const lockAcquired = await redisClient.set(TOKEN_LOCK_KEY, "locked", "EX", 60, "NX");
+            // 2. 분산 락으로 중복 토큰 발급 방지 (TTL 30초: 토큰 발급 HTTP 요청 지연 대비)
+            const lockAcquired = await redisClient.set(TOKEN_LOCK_KEY, "locked", "EX", 30, "NX");
 
             if (!lockAcquired) {
                 await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -165,8 +131,6 @@ export const getAccessToken = async (): Promise<string> => {
                 const tokenAfterLock = await redisClient.get(TOKEN_CACHE_KEY);
                 const expiryAfterLock = await redisClient.get(TOKEN_EXPIRY_KEY);
                 if (tokenAfterLock && expiryAfterLock && Date.now() < parseInt(expiryAfterLock)) {
-                    const remainSec = Math.max(1, (parseInt(expiryAfterLock) - Date.now()) / 1000);
-                    setMemoryToken(tokenAfterLock, remainSec);
                     return tokenAfterLock;
                 }
 
@@ -176,48 +140,30 @@ export const getAccessToken = async (): Promise<string> => {
                     throw new Error("환경변수 미설정: KIS_APP_KEY, KIS_APP_SECRET");
                 }
 
-                let tokenResponse;
-                try {
-                    tokenResponse = await axios.post(`${KIS_BASE_URL}/oauth2/tokenP`, {
-                        grant_type: "client_credentials",
-                        appkey: process.env.KIS_APP_KEY,
-                        appsecret: process.env.KIS_APP_SECRET,
-                    });
-                } catch (tokenErr) {
-                    const tokenAxiosErr = tokenErr as AxiosError<KISErrorResponse>;
-                    if (tokenAxiosErr.response?.data?.error_code === "EGW00133") {
-                        // 다른 인스턴스가 방금 토큰을 발급했을 수 있음 - 5초 후 Redis 재확인
-                        console.error("토큰 발급 EGW00133: 다른 인스턴스 토큰 대기 후 Redis 재확인");
-                        await new Promise((r) => setTimeout(r, 5000));
-                        const waitedToken = await redisClient.get(TOKEN_CACHE_KEY);
-                        const waitedExpiry = await redisClient.get(TOKEN_EXPIRY_KEY);
-                        if (waitedToken && waitedExpiry && Date.now() < parseInt(waitedExpiry)) {
-                            setMemoryToken(waitedToken, Math.max(1, (parseInt(waitedExpiry) - Date.now()) / 1000));
-                            return waitedToken;
-                        }
-                    }
-                    throw tokenErr;
-                }
+                const response = await axios.post(`${KIS_BASE_URL}/oauth2/tokenP`, {
+                    grant_type: "client_credentials",
+                    appkey: process.env.KIS_APP_KEY,
+                    appsecret: process.env.KIS_APP_SECRET,
+                });
 
-                const token = tokenResponse.data.access_token;
+                const token = response.data.access_token;
                 if (!token) {
                     throw new Error("토큰 없음");
                 }
 
                 // 4. Redis에 토큰 저장 (실제 만료 시간 기준, 1시간 버퍼 적용)
-                const expiresIn = tokenResponse.data.expires_in || 86400; // KIS 토큰 유효기간 24시간
+                const expiresIn = response.data.expires_in || 86400; // KIS 토큰 유효기간 24시간
                 const ttlSeconds = Math.max(expiresIn - 3600, 3600); // 최소 1시간 보장, 1시간 버퍼
                 const expiry = Date.now() + ttlSeconds * 1000;
                 await redisClient.set(TOKEN_CACHE_KEY, token, "EX", ttlSeconds);
                 await redisClient.set(TOKEN_EXPIRY_KEY, expiry.toString(), "EX", ttlSeconds);
-                setMemoryToken(token, ttlSeconds);
 
                 return token;
             } finally {
                 await redisClient.del(TOKEN_LOCK_KEY);
             }
         } else {
-            // Redis 없을 때: 메모리 캐시만 사용 (한 프로세스당 한 번 발급 후 만료까지 재사용)
+            // Redis 없으면 매번 새로 발급 (fallback)
             if (!process.env.KIS_APP_KEY || !process.env.KIS_APP_SECRET) {
                 throw new Error("환경변수 미설정");
             }
@@ -233,8 +179,6 @@ export const getAccessToken = async (): Promise<string> => {
                 throw new Error("토큰 없음");
             }
 
-            const expiresIn = response.data.expires_in ?? 86400;
-            setMemoryToken(token, expiresIn);
             return token;
         }
     } catch (error) {
@@ -391,7 +335,7 @@ export const getVolumeRankStocks = async () => {
 
                 const detailedStocks = await promiseAllWithLimit(
                     filteredOutput,
-                    1, // KIS 레이트리밋 준수: 1개씩 순차 호출 (전역 큐와 함께 사용)
+                    10, // 2개씩만 동시 호출
                     async (stock: VolumeRankStock) => {
                         try {
                             const detailData = await apiCallWithRetry(() => getStockPrice(stock.mksc_shrn_iscd));
@@ -486,32 +430,23 @@ interface KRXResponse {
 
 export const searchStockByName = async (keyword: string) => {
     try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-        let response: Response;
-        try {
-            response = await fetch("https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd", {
-                method: "POST",
-                headers: {
-                    Accept: "application/json, text/javascript, */*; q=0.01",
-                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                    Origin: "https://data.krx.co.kr",
-                    Referer: "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "X-Requested-With": "XMLHttpRequest",
-                },
-                body: new URLSearchParams({
-                    bld: "dbms/MDC/STAT/standard/MDCSTAT01901",
-                    locale: "ko_KR",
-                    mktId: "ALL",
-                }),
-                signal: controller.signal,
-            });
-        } finally {
-            clearTimeout(timeoutId);
-        }
+        const response = await fetch("http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd", {
+            method: "POST",
+            headers: {
+                Accept: "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                Origin: "http://data.krx.co.kr",
+                Referer: "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            body: new URLSearchParams({
+                bld: "dbms/MDC/STAT/standard/MDCSTAT01901",
+                locale: "ko_KR",
+                mktId: "ALL",
+            }),
+        });
 
         if (!response.ok) {
             throw new Error(`KRX API status: ${response.status}`);
